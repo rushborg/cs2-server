@@ -61,7 +61,31 @@ type ContainerStatus struct {
 	Running bool   `json:"running"`
 }
 
+// Allowed command types — agent rejects anything not in this list
+var allowedCommands = map[string]bool{
+	"deploy_server":       true,
+	"stop_server":         true,
+	"remove_server":       true,
+	"restart_server":      true,
+	"update_image":        true,
+	"sync_admins":         true,
+	"restart_idle_servers": true,
+	"install_plugin":      true,
+	"remove_plugin":       true,
+	"install_map":         true,
+	"remove_map":          true,
+	"get_status":          true,
+}
+
+// Max concurrent containers per host
+const maxContainers = 20
+
 func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interface{}, error) {
+	// Allowlist check — reject unknown commands
+	if !allowedCommands[cmdType] {
+		return nil, fmt.Errorf("rejected unknown command: %s", cmdType)
+	}
+
 	switch cmdType {
 	case "deploy_server":
 		var p DeployPayload
@@ -157,6 +181,18 @@ func (h *Handler) composeFile(port int) string {
 }
 
 func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
+	// Limit max containers per host
+	if status, err := h.getStatus(); err == nil {
+		if containers, ok := status.([]ContainerStatus); ok && len(containers) >= maxContainers {
+			return nil, fmt.Errorf("max containers reached (%d), cannot deploy more", maxContainers)
+		}
+	}
+
+	// Validate port range
+	if p.Port < 1024 || p.Port > 65535 {
+		return nil, fmt.Errorf("invalid port: %d (must be 1024-65535)", p.Port)
+	}
+
 	dir := h.instanceDir(p.Port)
 	configDir := filepath.Join(dir, "config")
 
@@ -169,8 +205,11 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	sharedDir := filepath.Join(h.DataDir, "shared")
 	os.MkdirAll(sharedDir, 0o755)
 
-	// Write server.cfg
+	// Write server.cfg (with size limit and basic validation)
 	if p.ServerCfg != "" {
+		if len(p.ServerCfg) > 64*1024 {
+			return nil, fmt.Errorf("server.cfg too large (%d bytes, max 64KB)", len(p.ServerCfg))
+		}
 		if err := os.WriteFile(filepath.Join(configDir, "server.cfg"), []byte(p.ServerCfg), 0o600); err != nil {
 			return nil, fmt.Errorf("writing server.cfg: %w", err)
 		}
