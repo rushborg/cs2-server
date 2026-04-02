@@ -11,8 +11,9 @@ import (
 )
 
 type Handler struct {
-	DataDir     string // /opt/rushborg
-	DockerImage string // ghcr.io/rushborg/cs2-server:latest
+	DataDir      string // /opt/rushborg-srv
+	DockerImage  string // ghcr.io/rushborg/cs2-server:latest
+	PlatformURL  string // https://rush-b.org — for validating download URLs
 }
 
 type DeployPayload struct {
@@ -160,7 +161,7 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	configDir := filepath.Join(dir, "config")
 
 	// Create directories
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating instance dir: %w", err)
 	}
 
@@ -285,6 +286,10 @@ func (h *Handler) installFile(p InstallFilePayload, subdir string) (interface{},
 	}
 	if subdir != "plugins" && subdir != "maps" {
 		return nil, fmt.Errorf("invalid subdir: %s", subdir)
+	}
+	// Validate download URL belongs to our platform (prevent SSRF)
+	if h.PlatformURL != "" && !strings.HasPrefix(p.DownloadURL, h.PlatformURL) {
+		return nil, fmt.Errorf("download URL does not match platform: %s", p.DownloadURL)
 	}
 
 	destDir := filepath.Join(h.DataDir, "shared", subdir)

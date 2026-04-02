@@ -56,6 +56,7 @@ func main() {
 	cmdHandler := &commands.Handler{
 		DataDir:     cfg.DataDir,
 		DockerImage: cfg.DockerImage,
+		PlatformURL: cfg.APIUrl,
 	}
 
 	// Create WebSocket client
