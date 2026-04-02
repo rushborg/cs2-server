@@ -1,0 +1,83 @@
+name: Build CS2 Server Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docker/cs2-server/**"
+  workflow_dispatch:
+    inputs:
+      metamod_url:
+        description: "MetaMod download URL (leave empty for default)"
+        required: false
+      sourcemod_url:
+        description: "SourceMod download URL (leave empty for default)"
+        required: false
+      get5_version:
+        description: "get5 version (e.g. 0.15.0)"
+        required: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/cs2-server
+
+jobs:
+  # CS2 Docker image — built on self-hosted runner (image is ~35GB)
+  build-cs2-image:
+    runs-on: self-hosted
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build CS2 image
+        working-directory: docker/cs2-server
+        run: |
+          docker build \
+            --build-arg METAMOD_URL="${{ github.event.inputs.metamod_url || '' }}" \
+            --build-arg SOURCEMOD_URL="${{ github.event.inputs.sourcemod_url || '' }}" \
+            --build-arg GET5_VERSION="${{ github.event.inputs.get5_version || '' }}" \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
+            .
+
+      - name: Push CS2 image
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Cleanup old images
+        run: |
+          docker image prune -f --filter "until=48h" || true
+
+  # Agent binary — built on GitHub-hosted runners (small Go binary)
+  build-agent:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build agent
+        working-directory: agent
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} \
+            go build -ldflags "-s -w -X main.version=${{ github.sha }}" \
+            -o ../dist/rushborg-agent-${{ matrix.arch }} \
+            ./cmd/rushborg-agent
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-${{ matrix.arch }}
+          path: dist/rushborg-agent-${{ matrix.arch }}

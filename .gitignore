@@ -1,0 +1,13 @@
+# Go
+agent/rushborg-agent
+agent/vendor/
+agent/tmp/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
