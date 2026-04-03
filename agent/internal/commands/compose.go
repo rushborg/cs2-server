@@ -8,7 +8,8 @@ import (
 var safeHostname = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 // GenerateComposeFile creates a docker-compose.yml for a CS2 server instance.
-func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken string) (string, error) {
+// Uses bind mounts from overlayfs merged dir instead of Docker named volumes.
+func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir string) (string, error) {
 	if port < 1024 || port > 65535 {
 		return "", fmt.Errorf("invalid port: %d", port)
 	}
@@ -24,6 +25,9 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken string) 
 		gsltEnv = fmt.Sprintf("\n      - CS2_GSLT=%s", gsltToken)
 	}
 
+	instDir := fmt.Sprintf("%s/instances/%d", dataDir, port)
+	sharedDir := fmt.Sprintf("%s/shared", dataDir)
+
 	return fmt.Sprintf(`services:
   cs2:
     image: %s
@@ -38,19 +42,17 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken string) 
       - CS2_MAP=de_mirage
       - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1%s
     volumes:
-      - cs2-%d-data:/home/steam/cs2-dedicated
+      - %s/cs2-merged:/home/steam/cs2-dedicated
       - ./config:/instance/config:ro
-      - ../../shared:/shared:ro
-      - ../../shared/plugins:/custom/plugins:ro
-      - ../../shared/maps:/custom/maps:ro
-      - cs2-%d-demos:/demos
+      - %s:/shared:ro
+      - %s/plugins:/custom/plugins:ro
+      - %s/maps:/custom/maps:ro
+      - %s/demos:/demos
     labels:
       - "rushborg.managed=true"
       - "rushborg.port=%d"
       - "rushborg.hostname=%s"
-
-volumes:
-  cs2-%d-data:
-  cs2-%d-demos:
-`, image, port, port, gotvPort, gsltEnv, port, port, port, hostname, port, port), nil
+`, image, port, port, gotvPort, gsltEnv,
+		instDir, sharedDir, sharedDir, sharedDir, instDir,
+		port, hostname), nil
 }
