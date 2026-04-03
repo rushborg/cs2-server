@@ -179,8 +179,9 @@ chown -R steam:steam "${CSGO_DIR}/addons/" 2>/dev/null || true
 exec gosu steam "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
     -port "${CS2_PORT:-27015}" \
     +tv_port "${CS2_GOTV_PORT:-27020}" \
+    -maxplayers "${CS2_MAXPLAYERS:-10}" \
     +map "${CS2_MAP:-de_mirage}" \
-    +game_type 0 +game_mode 1 \
+    +game_type "${CS2_GAME_TYPE:-0}" +game_mode "${CS2_GAME_MODE:-1}" \
     +exec server.cfg \
     ${GSLT_ARG} \
     -usercon

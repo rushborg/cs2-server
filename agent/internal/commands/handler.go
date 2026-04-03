@@ -27,6 +27,9 @@ type DeployPayload struct {
 	ServerCfg    string `json:"server_cfg"`
 	MatchZyCfg   string `json:"matchzy_cfg"`
 	GsltToken    string `json:"gslt_token"`
+	MaxPlayers   int    `json:"max_players"`
+	GameType     int    `json:"game_type"`
+	GameMode     int    `json:"game_mode"`
 }
 
 type PortPayload struct {
@@ -290,7 +293,11 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	if gotvPort == 0 {
 		gotvPort = p.Port + 5
 	}
-	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken, h.DataDir)
+	maxPlayers := p.MaxPlayers
+	if maxPlayers <= 0 {
+		maxPlayers = 10
+	}
+	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken, h.DataDir, maxPlayers, p.GameType, p.GameMode)
 	if err != nil {
 		return nil, fmt.Errorf("generating compose file: %w", err)
 	}
