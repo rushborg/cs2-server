@@ -59,9 +59,6 @@ func main() {
 		PlatformURL: cfg.APIUrl,
 	}
 
-	// Remount overlays (recovers from host reboot)
-	cmdHandler.RemountAllOverlays()
-
 	// Create WebSocket client
 	client := connection.NewClient(cfg.APIUrl, cfg.HostID, cfg.APIKey)
 	client.SetHandler(cmdHandler.HandleCommand)

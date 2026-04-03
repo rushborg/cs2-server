@@ -240,31 +240,21 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		return nil, fmt.Errorf("invalid port: %d (must be 1024-65535)", p.Port)
 	}
 
-	// Ensure CS2 base is installed
-	if !h.isBaseInstalled() {
-		if _, err := h.setupBase(); err != nil {
-			return nil, fmt.Errorf("setup base: %w", err)
-		}
-	}
-
 	dir := h.instanceDir(p.Port)
 	configDir := filepath.Join(dir, "config")
+	dataDir := filepath.Join(dir, "data")
 	demosDir := filepath.Join(dir, "demos")
 
 	// Create directories
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return nil, fmt.Errorf("creating instance dir: %w", err)
+	for _, d := range []string{configDir, dataDir, demosDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return nil, fmt.Errorf("creating dir %s: %w", d, err)
+		}
 	}
-	os.MkdirAll(demosDir, 0o755)
 
-	// Ensure shared dir exists
-	sharedDir := filepath.Join(h.DataDir, "shared")
-	os.MkdirAll(sharedDir, 0o755)
-
-	// Mount overlayfs for this instance
-	if err := h.mountOverlay(p.Port); err != nil {
-		return nil, fmt.Errorf("mount overlay: %w", err)
-	}
+	// Ensure shared base and shared dir exist
+	os.MkdirAll(filepath.Join(h.DataDir, "cs2-base"), 0o755)
+	os.MkdirAll(filepath.Join(h.DataDir, "shared"), 0o755)
 
 	// Write server.cfg (with size limit and basic validation)
 	if p.ServerCfg != "" {
@@ -320,13 +310,10 @@ func (h *Handler) stopServer(port int) (interface{}, error) {
 
 func (h *Handler) removeServer(port int) (interface{}, error) {
 	dir := h.instanceDir(port)
-	// Stop and remove container (no -v since we use bind mounts now)
 	out, err := h.runCompose(dir, "down")
 	if err != nil {
 		return nil, fmt.Errorf("docker compose down: %w\noutput: %s", err, out)
 	}
-	// Unmount overlay before removing directory
-	h.unmountOverlay(port)
 	os.RemoveAll(dir)
 	return map[string]string{"status": "removed"}, nil
 }
@@ -556,128 +543,65 @@ func (h *Handler) getStatus() (interface{}, error) {
 	return containers, nil
 }
 
-// ─── Shared CS2 Base + OverlayFS ────────────────────────
+// ─── Shared CS2 Base ────────────────────────────────────
+// CS2 base (62GB) is shared across all instances via bind mount.
+// Entrypoint handles installation/plugins inside the container.
+// Agent only manages instance directories and Docker lifecycle.
 
-func (h *Handler) baseDir() string {
-	return filepath.Join(h.DataDir, "cs2-base")
-}
-
-func (h *Handler) isBaseInstalled() bool {
-	_, err := os.Stat(filepath.Join(h.baseDir(), "game", "bin", "linuxsteamrt64", "cs2"))
-	return err == nil
-}
-
-// setupBase installs CS2 + plugins into a shared base directory.
-// Run once per host; subsequent servers reuse this base via overlayfs.
+// setupBase ensures the cs2-base directory exists and triggers
+// a one-time CS2 install by starting a temporary container.
 func (h *Handler) setupBase() (interface{}, error) {
-	base := h.baseDir()
+	base := filepath.Join(h.DataDir, "cs2-base")
 	os.MkdirAll(base, 0o755)
 
-	// 1. Install/update CS2 via SteamCMD Docker container
-	steamcmdArgs := []string{
-		"run", "--rm",
-		"-v", base + ":/home/steam/cs2-dedicated",
-		"cm2network/steamcmd:root",
-		"/home/steam/steamcmd/steamcmd.sh",
-		"+force_install_dir", "/home/steam/cs2-dedicated",
-		"+login", "anonymous",
-		"+app_update", "730", "validate",
-		"+quit",
+	// Check if already installed
+	if _, err := os.Stat(filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")); err == nil {
+		return map[string]string{"status": "already_installed", "path": base}, nil
 	}
-	cmd := exec.Command("docker", steamcmdArgs...)
+
+	// Run the CS2 server image with just the base mount — entrypoint
+	// will install CS2 + plugins, then exit when CS2 starts (we kill it after install)
+	cmd := exec.Command("docker", "run", "--rm",
+		"--name", "cs2-base-setup",
+		"-v", base+":/home/steam/cs2-dedicated",
+		"-e", "CS2_PORT=0", // won't actually bind
+		"--security-opt", "seccomp=unconfined",
+		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
+		h.DockerImage,
+	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// SteamCMD often exits non-zero on first run (self-update), retry
-		cmd = exec.Command("docker", steamcmdArgs...)
-		out, err = cmd.CombinedOutput()
-		if err != nil {
-			return nil, fmt.Errorf("steamcmd install: %w\noutput: %s", err, string(out))
-		}
-	}
-
-	csgoDir := filepath.Join(base, "game", "csgo")
-
-	// 2. Fix steamclient.so
-	steamclientSrc := filepath.Join(base, "..", "steamcmd", "linux64", "steamclient.so")
-	steamclientDst := filepath.Join(base, "game", "bin", "linuxsteamrt64", "steamclient.so")
-	// Try to copy from a SteamCMD installation if available
-	exec.Command("docker", "run", "--rm",
-		"-v", base+":/cs2",
-		"cm2network/steamcmd:root",
-		"cp", "/home/steam/steamcmd/linux64/steamclient.so", "/cs2/game/bin/linuxsteamrt64/steamclient.so",
-	).Run()
-	_ = steamclientSrc
-	_ = steamclientDst
-
-	// 3. Install MetaMod
-	metamodURL := "https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux.tar.gz"
-	exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL '%s' | tar xz -C '%s/'", metamodURL, csgoDir)).Run()
-
-	// 4. Install CounterStrikeSharp
-	cssharpURL := "https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.364/counterstrikesharp-with-runtime-linux-1.0.364.zip"
-	exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL -o /tmp/cssharp.zip '%s' && cd '%s' && unzip -o /tmp/cssharp.zip && rm /tmp/cssharp.zip", cssharpURL, csgoDir)).Run()
-
-	// 5. Install MatchZy
-	matchzyURL := "https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15.zip"
-	exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL -o /tmp/matchzy.zip '%s' && cd '%s' && unzip -o /tmp/matchzy.zip && rm /tmp/matchzy.zip", matchzyURL, csgoDir)).Run()
-
-	// 6. Patch gameinfo.gi for MetaMod
-	gameinfoPath := filepath.Join(csgoDir, "gameinfo.gi")
-	if data, err := os.ReadFile(gameinfoPath); err == nil {
-		if !strings.Contains(string(data), "metamod") {
-			patched := strings.Replace(string(data),
-				"Game_LowViolence",
-				"Game_LowViolence\tcsgo_lv // Perfect World content override\n\t\t\tGame\tcsgo/addons/metamod",
-				1)
-			// Only write if we actually changed something beyond what was there
-			if strings.Contains(patched, "csgo/addons/metamod") {
-				os.WriteFile(gameinfoPath, []byte(patched), 0o644)
-			}
-		}
-	}
-
-	// 7. Fix permissions — CS2 runs as uid 1000 (steam) inside container
-	exec.Command("chmod", "-R", "755", filepath.Join(csgoDir, "addons")).Run()
-	exec.Command("chown", "-R", "1000:1000", base).Run()
-
-	// 8. Create core.json for CSSharp
-	configsDir := filepath.Join(csgoDir, "addons", "counterstrikesharp", "configs")
-	coreJSON := filepath.Join(configsDir, "core.json")
-	coreExample := filepath.Join(configsDir, "core.example.json")
-	if _, err := os.Stat(coreJSON); os.IsNotExist(err) {
-		if data, err := os.ReadFile(coreExample); err == nil {
-			os.WriteFile(coreJSON, data, 0o644)
+		// Container exits when CS2 tries to bind port 0, that's expected
+		// Check if CS2 was actually installed
+		if _, statErr := os.Stat(filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")); statErr != nil {
+			return nil, fmt.Errorf("setup base failed: %w\noutput: %s", err, string(out))
 		}
 	}
 
 	return map[string]string{"status": "base_installed", "path": base}, nil
 }
 
-// updateBase updates the shared CS2 base (SteamCMD + plugins).
-// Stops all servers, updates, remounts overlays, restarts.
+// updateBase stops all servers, updates CS2 via SteamCMD, restarts.
 func (h *Handler) updateBase() (interface{}, error) {
-	// 1. Get running instances
 	instances, _ := h.listInstancePorts()
 
-	// 2. Stop all containers
+	// Stop all
 	for _, port := range instances {
 		h.stopServer(port)
 	}
 
-	// 3. Unmount all overlays
-	for _, port := range instances {
-		h.unmountOverlay(port)
-	}
+	// Force reinstall by removing marker
+	base := filepath.Join(h.DataDir, "cs2-base")
+	os.Remove(filepath.Join(base, "game", "csgo", "addons", ".rushborg-plugins-installed"))
 
-	// 4. Update base
+	// Run setup
 	result, err := h.setupBase()
 	if err != nil {
-		return nil, fmt.Errorf("update base failed: %w", err)
+		return nil, err
 	}
 
-	// 5. Remount overlays and restart
+	// Restart all
 	for _, port := range instances {
-		h.mountOverlay(port)
 		dir := h.instanceDir(port)
 		h.runCompose(dir, "up", "-d")
 	}
@@ -701,76 +625,6 @@ func (h *Handler) listInstancePorts() ([]int, error) {
 		}
 	}
 	return ports, nil
-}
-
-func (h *Handler) mountOverlay(port int) error {
-	base := h.baseDir()
-	inst := h.instanceDir(port)
-	upper := filepath.Join(inst, "overlay-upper")
-	work := filepath.Join(inst, "overlay-work")
-	merged := filepath.Join(inst, "cs2-merged")
-
-	os.MkdirAll(upper, 0o777)
-	os.MkdirAll(work, 0o777)
-	os.MkdirAll(merged, 0o755)
-	// Ensure overlay dirs are writable by CS2 process (uid 1000 in container)
-	exec.Command("chown", "1000:1000", upper).Run()
-	exec.Command("chown", "1000:1000", work).Run()
-
-	// Check if already mounted
-	if h.isOverlayMounted(port) {
-		return nil
-	}
-
-	cmd := exec.Command("sudo", "mount", "-t", "overlay", "overlay",
-		"-o", fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", base, upper, work),
-		merged)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("mount overlay: %w\noutput: %s", err, string(out))
-	}
-
-	// Fix ownership — CS2 runs as uid 1000 (steam) inside container
-	exec.Command("sudo", "chown", "-R", "1000:1000", upper).Run()
-
-	return nil
-}
-
-func (h *Handler) unmountOverlay(port int) error {
-	merged := filepath.Join(h.instanceDir(port), "cs2-merged")
-	if !h.isOverlayMounted(port) {
-		return nil
-	}
-	cmd := exec.Command("sudo", "umount", merged)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("umount overlay: %w\noutput: %s", err, string(out))
-	}
-	return nil
-}
-
-func (h *Handler) isOverlayMounted(port int) bool {
-	merged := filepath.Join(h.instanceDir(port), "cs2-merged")
-	out, err := exec.Command("sudo", "mountpoint", "-q", merged).CombinedOutput()
-	_ = out
-	return err == nil
-}
-
-// RemountAllOverlays re-mounts overlays for all instances.
-// Called on agent startup to recover from host reboot.
-func (h *Handler) RemountAllOverlays() {
-	if !h.isBaseInstalled() {
-		return
-	}
-	ports, err := h.listInstancePorts()
-	if err != nil {
-		return
-	}
-	for _, port := range ports {
-		if _, err := os.Stat(filepath.Join(h.instanceDir(port), "overlay-upper")); err == nil {
-			h.mountOverlay(port)
-		}
-	}
 }
 
 func (h *Handler) runCompose(dir string, args ...string) (string, error) {
