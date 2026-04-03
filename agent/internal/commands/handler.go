@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,10 @@ import (
 	"github.com/gorcon/rcon"
 	a2s "github.com/rumblefrog/go-a2s"
 )
+
+func sha256Sum(data []byte) [32]byte {
+	return sha256.Sum256(data)
+}
 
 type Handler struct {
 	DataDir      string // /opt/rushborg-srv
@@ -42,6 +47,7 @@ type UpdateImagePayload struct {
 
 type UpdateAgentPayload struct {
 	DownloadURL string `json:"download_url"` // Direct URL or GitHub release URL
+	SHA256      string `json:"sha256"`       // Expected checksum (hex). If set, binary is verified after download.
 }
 
 type SyncAdminsPayload struct {
@@ -380,6 +386,22 @@ func (h *Handler) updateImage(tag string) (interface{}, error) {
 }
 
 func (h *Handler) syncAdmins(content string) (interface{}, error) {
+	// Validate content: only allow comment lines and admin entries
+	// Format: "STEAM_0:X:XXXXXXX" "b"
+	if len(content) > 64*1024 {
+		return nil, fmt.Errorf("admins content too large (%d bytes)", len(content))
+	}
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+		// Must match pattern: "STEAM_..." "..."
+		if !strings.HasPrefix(line, `"STEAM_`) && !strings.HasPrefix(line, `"[U:`) {
+			return nil, fmt.Errorf("invalid admin entry: %s", line)
+		}
+	}
+
 	sharedDir := filepath.Join(h.DataDir, "shared")
 	os.MkdirAll(sharedDir, 0o755)
 	path := filepath.Join(sharedDir, "admins_simple.ini")
@@ -652,6 +674,20 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("download failed: %w\noutput: %s", err, string(out))
+	}
+
+	// Verify SHA256 checksum if provided
+	if p.SHA256 != "" {
+		data, err := os.ReadFile(tmpPath)
+		if err != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("read downloaded binary: %w", err)
+		}
+		hash := fmt.Sprintf("%x", sha256Sum(data))
+		if hash != strings.ToLower(p.SHA256) {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("checksum mismatch: expected %s, got %s", p.SHA256, hash)
+		}
 	}
 
 	// Make executable
