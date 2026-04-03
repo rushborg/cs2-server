@@ -751,21 +751,20 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 		return nil, fmt.Errorf("chmod failed: %w", err)
 	}
 
-	// Replace binary (atomic: rename is atomic on same filesystem)
-	if err := os.Rename(tmpPath, binPath); err != nil {
-		// Rename may fail across filesystems, fallback to copy
-		cpOut, cpErr := exec.Command("cp", "-f", tmpPath, binPath).CombinedOutput()
-		os.Remove(tmpPath)
-		if cpErr != nil {
-			return nil, fmt.Errorf("replace binary failed: %w\noutput: %s", cpErr, string(cpOut))
-		}
+	// Replace binary — agent runs as rushborgsrv, binary owned by root.
+	// Use sudo cp to replace, then sudo systemctl to restart.
+	cpOut, cpErr := exec.Command("sudo", "cp", "-f", tmpPath, binPath).CombinedOutput()
+	os.Remove(tmpPath)
+	if cpErr != nil {
+		return nil, fmt.Errorf("replace binary failed: %w\noutput: %s", cpErr, string(cpOut))
 	}
+	exec.Command("sudo", "chmod", "+x", binPath).Run()
 
 	// Restart agent via systemctl (this kills the current process)
 	go func() {
 		// Small delay to allow response to be sent
 		exec.Command("sleep", "1").Run()
-		exec.Command("systemctl", "restart", "rushborg-agent").Run()
+		exec.Command("sudo", "systemctl", "restart", "rushborg-agent").Run()
 	}()
 
 	return map[string]string{"status": "updating", "message": "agent will restart in ~1s"}, nil
