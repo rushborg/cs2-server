@@ -37,6 +37,11 @@ type UpdateImagePayload struct {
 	ImageTag string `json:"image_tag"`
 }
 
+type UpdateAgentPayload struct {
+	DownloadURL string `json:"download_url"` // Platform URL to download new binary
+	AuthToken   string `json:"auth_token"`   // Bearer token for authenticated download
+}
+
 type SyncAdminsPayload struct {
 	Content string `json:"content"`
 }
@@ -74,6 +79,7 @@ var allowedCommands = map[string]bool{
 	"setup_base":          true,
 	"update_base":         true,
 	"update_image":        true,
+	"update_agent":        true,
 	"sync_admins":         true,
 	"restart_idle_servers": true,
 	"install_plugin":      true,
@@ -140,6 +146,13 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interf
 
 	case "update_base":
 		return h.updateBase()
+
+	case "update_agent":
+		var p UpdateAgentPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("invalid update_agent payload: %w", err)
+		}
+		return h.updateAgent(p)
 
 	case "update_image":
 		var p UpdateImagePayload
@@ -607,6 +620,56 @@ func (h *Handler) updateBase() (interface{}, error) {
 	}
 
 	return result, nil
+}
+
+// updateAgent downloads a new agent binary and restarts via systemctl.
+func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
+	if p.DownloadURL == "" {
+		return nil, fmt.Errorf("download_url is required")
+	}
+	// Validate URL belongs to our platform
+	if h.PlatformURL != "" && !strings.HasPrefix(p.DownloadURL, h.PlatformURL) {
+		return nil, fmt.Errorf("download URL does not match platform")
+	}
+
+	tmpPath := "/tmp/rushborg-agent-new"
+	binPath := "/usr/local/bin/rushborg-agent"
+
+	// Download new binary
+	args := []string{"-fsSL", "--max-time", "120", "-o", tmpPath}
+	if p.AuthToken != "" {
+		args = append(args, "-H", "Authorization: Bearer "+p.AuthToken)
+	}
+	args = append(args, p.DownloadURL)
+	cmd := exec.Command("curl", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("download failed: %w\noutput: %s", err, string(out))
+	}
+
+	// Make executable
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
+		return nil, fmt.Errorf("chmod failed: %w", err)
+	}
+
+	// Replace binary (atomic: rename is atomic on same filesystem)
+	if err := os.Rename(tmpPath, binPath); err != nil {
+		// Rename may fail across filesystems, fallback to copy
+		cpOut, cpErr := exec.Command("cp", "-f", tmpPath, binPath).CombinedOutput()
+		os.Remove(tmpPath)
+		if cpErr != nil {
+			return nil, fmt.Errorf("replace binary failed: %w\noutput: %s", cpErr, string(cpOut))
+		}
+	}
+
+	// Restart agent via systemctl (this kills the current process)
+	go func() {
+		// Small delay to allow response to be sent
+		exec.Command("sleep", "1").Run()
+		exec.Command("systemctl", "restart", "rushborg-agent").Run()
+	}()
+
+	return map[string]string{"status": "updating", "message": "agent will restart in ~1s"}, nil
 }
 
 func (h *Handler) listInstancePorts() ([]int, error) {
