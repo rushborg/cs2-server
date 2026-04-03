@@ -58,7 +58,7 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
         cat > "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" << 'VDFEOF'
 "Plugin"
 {
-	"file"	"../counterstrikesharp/bin/linuxsteamrt64/counterstrikesharp"
+	"file"	"addons/counterstrikesharp/bin/linuxsteamrt64/counterstrikesharp"
 }
 VDFEOF
         echo "  CounterStrikeSharp registered in MetaMod"
