@@ -135,6 +135,12 @@ fi
 # ─── Start CS2 ───────────────────────────────────────────
 echo "[RUSH-B.ORG] Starting CS2 server on port ${CS2_PORT:-27015}..."
 
+GSLT_ARG=""
+if [ -n "${CS2_GSLT}" ]; then
+    GSLT_ARG="+sv_setsteamaccount ${CS2_GSLT}"
+    echo "[RUSH-B.ORG] GSLT token configured"
+fi
+
 export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"
 
 exec "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
@@ -143,4 +149,5 @@ exec "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
     +map "${CS2_MAP:-de_mirage}" \
     +game_type 0 +game_mode 1 \
     +exec server.cfg \
+    ${GSLT_ARG} \
     -usercon
