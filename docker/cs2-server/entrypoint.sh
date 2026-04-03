@@ -137,6 +137,13 @@ if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
     cp -f /instance/config/*.cfg "${CSGO_DIR}/cfg/" 2>/dev/null || true
 fi
 
+# Override MatchZy config.cfg defaults with platform values
+MATCHZY_CFG="${CSGO_DIR}/cfg/MatchZy/config.cfg"
+if [ -f "${MATCHZY_CFG}" ]; then
+    sed -i 's|^matchzy_chat_prefix.*|matchzy_chat_prefix [{Green}RUSH-B.ORG{Default}]|' "${MATCHZY_CFG}"
+    log " MatchZy chat prefix set to [RUSH-B.ORG]"
+fi
+
 if [ -f /shared/admins_simple.ini ] && [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/configs"
     cp -f /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
