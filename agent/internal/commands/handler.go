@@ -636,8 +636,9 @@ func (h *Handler) setupBase() (interface{}, error) {
 		}
 	}
 
-	// 7. Fix permissions
+	// 7. Fix permissions — CS2 runs as uid 1000 (steam) inside container
 	exec.Command("chmod", "-R", "755", filepath.Join(csgoDir, "addons")).Run()
+	exec.Command("chown", "-R", "1000:1000", base).Run()
 
 	// 8. Create core.json for CSSharp
 	configsDir := filepath.Join(csgoDir, "addons", "counterstrikesharp", "configs")
@@ -725,6 +726,10 @@ func (h *Handler) mountOverlay(port int) error {
 	if err != nil {
 		return fmt.Errorf("mount overlay: %w\noutput: %s", err, string(out))
 	}
+
+	// Fix ownership — CS2 runs as uid 1000 (steam) inside container
+	exec.Command("sudo", "chown", "-R", "1000:1000", upper).Run()
+
 	return nil
 }
 
