@@ -88,15 +88,12 @@ fi
 
 echo "[RUSH-B.ORG] Starting CS2 server..."
 
-# ─── Start CS2 via base image entry if available ─────────
-if [ -f "${CS2_DIR}/entry.sh" ]; then
-    exec "${CS2_DIR}/entry.sh" "$@"
-else
-    # Fallback: start directly
-    exec "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
-        -port "${CS2_PORT:-27015}" \
-        +tv_port "${CS2_GOTV_PORT:-27020}" \
-        +map "${CS2_MAP:-de_mirage}" \
-        +game_type 0 +game_mode 1 \
-        -usercon
-fi
+# Set LD_LIBRARY_PATH for CS2 dependencies (libv8.so etc)
+export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"
+
+exec "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
+    -port "${CS2_PORT:-27015}" \
+    +tv_port "${CS2_GOTV_PORT:-27020}" \
+    +map "${CS2_MAP:-de_mirage}" \
+    +game_type 0 +game_mode 1 \
+    -usercon
