@@ -718,7 +718,7 @@ func (h *Handler) mountOverlay(port int) error {
 		return nil
 	}
 
-	cmd := exec.Command("mount", "-t", "overlay", "overlay",
+	cmd := exec.Command("sudo", "mount", "-t", "overlay", "overlay",
 		"-o", fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", base, upper, work),
 		merged)
 	out, err := cmd.CombinedOutput()
@@ -733,7 +733,7 @@ func (h *Handler) unmountOverlay(port int) error {
 	if !h.isOverlayMounted(port) {
 		return nil
 	}
-	cmd := exec.Command("umount", merged)
+	cmd := exec.Command("sudo", "umount", merged)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("umount overlay: %w\noutput: %s", err, string(out))
@@ -743,7 +743,7 @@ func (h *Handler) unmountOverlay(port int) error {
 
 func (h *Handler) isOverlayMounted(port int) bool {
 	merged := filepath.Join(h.instanceDir(port), "cs2-merged")
-	out, err := exec.Command("mountpoint", "-q", merged).CombinedOutput()
+	out, err := exec.Command("sudo", "mountpoint", "-q", merged).CombinedOutput()
 	_ = out
 	return err == nil
 }
