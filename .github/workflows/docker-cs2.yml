@@ -67,3 +67,37 @@ jobs:
         with:
           name: agent-${{ matrix.arch }}
           path: dist/rushborg-agent-${{ matrix.arch }}
+
+  release-agent:
+    needs: build-agent
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-amd64
+          path: dist/
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-arm64
+          path: dist/
+
+      - name: Create/update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Delete existing 'latest' release if exists
+          gh release delete agent-latest --yes --repo ${{ github.repository }} 2>/dev/null || true
+          git push --delete origin agent-latest 2>/dev/null || true
+
+          # Create new release with agent binaries
+          gh release create agent-latest \
+            --repo ${{ github.repository }} \
+            --title "Agent Build ${{ github.sha }}" \
+            --notes "Auto-built agent binary from commit ${{ github.sha }}" \
+            --prerelease \
+            dist/rushborg-agent-amd64 \
+            dist/rushborg-agent-arm64
