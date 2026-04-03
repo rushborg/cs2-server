@@ -4,7 +4,7 @@ FROM cm2network/steamcmd:root
 # CS2 will be installed on first run into a persistent volume
 
 USER root
-RUN apt-get update -qq && apt-get install -y -qq curl unzip && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq curl unzip execstack && rm -rf /var/lib/apt/lists/*
 USER steam
 
 VOLUME ["/home/steam/cs2-dedicated", "/instance/config", "/shared", "/custom/plugins", "/custom/maps", "/demos"]
