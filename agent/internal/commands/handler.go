@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	a2s "github.com/rumblefrog/go-a2s"
 )
 
 type Handler struct {
@@ -76,6 +78,7 @@ var allowedCommands = map[string]bool{
 	"remove_map":          true,
 	"get_status":          true,
 	"get_logs":            true,
+	"query_server":        true,
 }
 
 type GetLogsPayload struct {
@@ -169,6 +172,13 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interf
 			return nil, fmt.Errorf("invalid remove_map payload: %w", err)
 		}
 		return h.removeFile(p, "maps")
+
+	case "query_server":
+		var p PortPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("invalid query_server payload: %w", err)
+		}
+		return h.queryServer(p.Port)
 
 	case "get_logs":
 		var p GetLogsPayload
@@ -386,6 +396,51 @@ func (h *Handler) removeFile(p RemoveFilePayload, subdir string) (interface{}, e
 		return nil, fmt.Errorf("removing %s: %w", p.Filename, err)
 	}
 	return map[string]string{"status": "removed", "filename": p.Filename}, nil
+}
+
+func (h *Handler) queryServer(port int) (interface{}, error) {
+	if port < 1024 || port > 65535 {
+		return nil, fmt.Errorf("invalid port: %d", port)
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	client, err := a2s.NewClient(addr, a2s.SetMaxPacketSize(14000))
+	if err != nil {
+		return map[string]interface{}{"online": false, "error": fmt.Sprintf("connect: %v", err)}, nil
+	}
+	defer client.Close()
+
+	info, err := client.QueryInfo()
+	if err != nil {
+		return map[string]interface{}{"online": false, "error": fmt.Sprintf("query: %v", err)}, nil
+	}
+
+	result := map[string]interface{}{
+		"online":       true,
+		"server_name":  info.Name,
+		"map":          info.Map,
+		"players":      info.Players,
+		"max_players":  info.MaxPlayers,
+		"bots":         info.Bots,
+		"game_version": info.Version,
+		"vac":          info.VAC,
+	}
+
+	// Try player list
+	players, err := client.QueryPlayer()
+	if err == nil && players != nil {
+		plist := make([]map[string]interface{}, 0)
+		for _, p := range players.Players {
+			plist = append(plist, map[string]interface{}{
+				"name":             p.Name,
+				"score":            p.Score,
+				"duration_seconds": p.Duration,
+			})
+		}
+		result["player_list"] = plist
+	}
+
+	return result, nil
 }
 
 func (h *Handler) getLogs(p GetLogsPayload) (interface{}, error) {
