@@ -710,9 +710,12 @@ func (h *Handler) mountOverlay(port int) error {
 	work := filepath.Join(inst, "overlay-work")
 	merged := filepath.Join(inst, "cs2-merged")
 
-	os.MkdirAll(upper, 0o755)
-	os.MkdirAll(work, 0o755)
+	os.MkdirAll(upper, 0o777)
+	os.MkdirAll(work, 0o777)
 	os.MkdirAll(merged, 0o755)
+	// Ensure overlay dirs are writable by CS2 process (uid 1000 in container)
+	exec.Command("chown", "1000:1000", upper).Run()
+	exec.Command("chown", "1000:1000", work).Run()
 
 	// Check if already mounted
 	if h.isOverlayMounted(port) {
