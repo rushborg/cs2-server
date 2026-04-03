@@ -8,7 +8,8 @@ PLUGIN_MARKER="${CSGO_DIR}/addons/.rushborg-plugins-installed"
 
 # Plugin URLs — update these when new versions release
 METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux.tar.gz"
-MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15-with-cssharp-linux.zip"
+CSSHARP_URL="https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.364/counterstrikesharp-with-runtime-linux-1.0.364.zip"
+MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15.zip"
 
 # ─── Install/update CS2 ──────────────────────────────────
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
@@ -39,13 +40,24 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     echo "[RUSH-B.ORG] Installing MetaMod..."
     curl -fsSL "${METAMOD_URL}" | tar xz -C "${CSGO_DIR}/" 2>/dev/null || echo "  MetaMod install failed"
 
-    echo "[RUSH-B.ORG] Installing MatchZy (with CounterStrikeSharp)..."
+    echo "[RUSH-B.ORG] Installing CounterStrikeSharp..."
+    TMPZIP="/tmp/cssharp.zip"
+    curl -fsSL -o "${TMPZIP}" "${CSSHARP_URL}" 2>/dev/null
+    if [ -f "${TMPZIP}" ]; then
+        cd "${CSGO_DIR}" && unzip -o "${TMPZIP}" 2>/dev/null || echo "  CSSharp extract failed"
+        rm -f "${TMPZIP}"
+        echo "  CounterStrikeSharp installed"
+    else
+        echo "  CounterStrikeSharp download failed"
+    fi
+
+    echo "[RUSH-B.ORG] Installing MatchZy plugin..."
     TMPZIP="/tmp/matchzy.zip"
     curl -fsSL -o "${TMPZIP}" "${MATCHZY_URL}" 2>/dev/null
     if [ -f "${TMPZIP}" ]; then
         cd "${CSGO_DIR}" && unzip -o "${TMPZIP}" 2>/dev/null || echo "  MatchZy extract failed"
         rm -f "${TMPZIP}"
-        echo "  MatchZy + CounterStrikeSharp installed"
+        echo "  MatchZy installed"
     else
         echo "  MatchZy download failed"
     fi
