@@ -7,7 +7,7 @@ CSGO_DIR="${CS2_DIR}/game/csgo"
 PLUGIN_MARKER="${CSGO_DIR}/addons/.rushborg-plugins-installed"
 
 # Plugin URLs — update these when new versions release
-METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1313-linux.tar.gz"
+METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux.tar.gz"
 MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15-with-cssharp-linux.zip"
 
 # ─── Install/update CS2 ──────────────────────────────────
@@ -52,6 +52,22 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
 
     touch "${PLUGIN_MARKER}"
     echo "[RUSH-B.ORG] Plugins installed"
+fi
+
+# ─── Patch gameinfo.gi for MetaMod (idempotent) ─────────
+GAMEINFO="${CSGO_DIR}/gameinfo.gi"
+if [ -f "${GAMEINFO}" ] && [ -d "${CSGO_DIR}/addons/metamod" ]; then
+    if ! grep -q "metamod" "${GAMEINFO}"; then
+        echo "[RUSH-B.ORG] Patching gameinfo.gi for MetaMod..."
+        sed -i '/Game_LowViolence/a\\t\t\tGame\tcsgo/addons/metamod' "${GAMEINFO}"
+        if grep -q "metamod" "${GAMEINFO}"; then
+            echo "  gameinfo.gi patched successfully"
+        else
+            echo "  WARNING: gameinfo.gi patch failed"
+        fi
+    else
+        echo "[RUSH-B.ORG] gameinfo.gi already has MetaMod entry"
+    fi
 fi
 
 # ─── Copy configs ─────────────────────────────────────────
