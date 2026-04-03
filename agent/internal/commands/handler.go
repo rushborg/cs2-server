@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/gorcon/rcon"
 	a2s "github.com/rumblefrog/go-a2s"
 )
 
@@ -79,11 +80,18 @@ var allowedCommands = map[string]bool{
 	"get_status":          true,
 	"get_logs":            true,
 	"query_server":        true,
+	"exec_rcon":           true,
 }
 
 type GetLogsPayload struct {
 	Port int `json:"port"`
 	Tail int `json:"tail"`
+}
+
+type RCONPayload struct {
+	Port     int    `json:"port"`
+	Password string `json:"password"`
+	Command  string `json:"command"`
 }
 
 // Max concurrent containers per host
@@ -172,6 +180,13 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interf
 			return nil, fmt.Errorf("invalid remove_map payload: %w", err)
 		}
 		return h.removeFile(p, "maps")
+
+	case "exec_rcon":
+		var p RCONPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("invalid exec_rcon payload: %w", err)
+		}
+		return h.execRCON(p)
 
 	case "query_server":
 		var p PortPayload
@@ -396,6 +411,29 @@ func (h *Handler) removeFile(p RemoveFilePayload, subdir string) (interface{}, e
 		return nil, fmt.Errorf("removing %s: %w", p.Filename, err)
 	}
 	return map[string]string{"status": "removed", "filename": p.Filename}, nil
+}
+
+func (h *Handler) execRCON(p RCONPayload) (interface{}, error) {
+	if p.Port < 1024 || p.Port > 65535 {
+		return nil, fmt.Errorf("invalid port: %d", p.Port)
+	}
+	if p.Command == "" {
+		return nil, fmt.Errorf("empty command")
+	}
+
+	addr := fmt.Sprintf("127.0.0.1:%d", p.Port)
+	conn, err := rcon.Dial(addr, p.Password)
+	if err != nil {
+		return nil, fmt.Errorf("rcon connect: %w", err)
+	}
+	defer conn.Close()
+
+	response, err := conn.Execute(p.Command)
+	if err != nil {
+		return nil, fmt.Errorf("rcon exec: %w", err)
+	}
+
+	return map[string]string{"output": response}, nil
 }
 
 func (h *Handler) queryServer(port int) (interface{}, error) {

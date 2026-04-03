@@ -7,4 +7,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require github.com/rumblefrog/go-a2s v1.0.3 // indirect
+require (
+	github.com/gorcon/rcon v1.4.0 // indirect
+	github.com/rumblefrog/go-a2s v1.0.3 // indirect
+)
