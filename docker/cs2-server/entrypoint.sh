@@ -5,6 +5,8 @@
 
 set -e
 
+log() { echo "[$(date '+%H:%M:%S')] [RUSH-B.ORG] $1"; }
+
 CS2_DIR=/home/steam/cs2-dedicated
 CSGO_DIR="${CS2_DIR}/game/csgo"
 INSTANCE_DATA="/instance/data"
@@ -17,7 +19,7 @@ PLUGIN_MARKER="${CSGO_DIR}/addons/.rushborg-plugins-installed"
 
 # ─── Install CS2 if not present (first container on this host) ───
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-    echo "[RUSH-B.ORG] CS2 not installed, running SteamCMD..."
+    log " CS2 not installed, running SteamCMD..."
     /home/steam/steamcmd/steamcmd.sh \
         +force_install_dir "${CS2_DIR}" \
         +login anonymous \
@@ -40,7 +42,7 @@ fi
 
 # ─── Install plugins (once per base) ────────────────────
 if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
-    echo "[RUSH-B.ORG] Installing plugins..."
+    log " Installing plugins..."
 
     echo "  Installing MetaMod..."
     curl -fsSL "${METAMOD_URL}" | tar xz -C "${CSGO_DIR}/" 2>/dev/null || echo "  MetaMod install failed"
@@ -80,14 +82,14 @@ VDFEOF
     fi
 
     touch "${PLUGIN_MARKER}"
-    echo "[RUSH-B.ORG] Plugins installed"
+    log " Plugins installed"
 fi
 
 # ─── Patch gameinfo.gi for MetaMod (idempotent) ─────────
 GAMEINFO="${CSGO_DIR}/gameinfo.gi"
 if [ -f "${GAMEINFO}" ] && [ -d "${CSGO_DIR}/addons/metamod" ]; then
     if ! grep -q "metamod" "${GAMEINFO}"; then
-        echo "[RUSH-B.ORG] Patching gameinfo.gi for MetaMod..."
+        log " Patching gameinfo.gi for MetaMod..."
         sed -i '/Game_LowViolence/a\\t\t\tGame\tcsgo/addons/metamod' "${GAMEINFO}"
     fi
 fi
@@ -128,7 +130,7 @@ if [ -d "${CSGO_DIR}" ]; then
 fi
 
 # ─── Copy configs ─────────────────────────────────────────
-echo "[RUSH-B.ORG] Applying configs..."
+log " Applying configs..."
 
 if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/cfg"
@@ -152,12 +154,12 @@ if [ -d /custom/maps ] && [ -d "${CSGO_DIR}" ]; then
 fi
 
 # ─── Start CS2 ───────────────────────────────────────────
-echo "[RUSH-B.ORG] Starting CS2 on port ${CS2_PORT:-27015}..."
+log " Starting CS2 on port ${CS2_PORT:-27015}..."
 
 GSLT_ARG=""
 if [ -n "${CS2_GSLT}" ]; then
     GSLT_ARG="+sv_setsteamaccount ${CS2_GSLT}"
-    echo "[RUSH-B.ORG] GSLT token configured"
+    log " GSLT token configured"
 fi
 
 export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"

@@ -25,6 +25,8 @@ type Config struct {
 	DockerImage string `yaml:"docker_image"`
 }
 
+var version = "dev" // set by -ldflags "-X main.version=..."
+
 func main() {
 	configPath := flag.String("config", "/etc/rushborg/agent.yaml", "Path to config file")
 	flag.Parse()
@@ -46,7 +48,7 @@ func main() {
 		cfg.DockerImage = "ghcr.io/rushborg/cs2-server:latest"
 	}
 
-	log.Printf("[agent] starting rush-b.org agent v1.0.0")
+	log.Printf("[agent] starting rush-b.org agent %s", version)
 	log.Printf("[agent] host_id: %s", cfg.HostID)
 	log.Printf("[agent] api_url: %s", cfg.APIUrl)
 	log.Printf("[agent] data_dir: %s", cfg.DataDir)
@@ -101,7 +103,7 @@ func sendHeartbeat(client *connection.Client, cmdHandler *commands.Handler, data
 		"cpu_percent":  metrics.CPU,
 		"ram_percent":  metrics.RAM,
 		"disk_percent": metrics.Disk,
-		"version":      "1.0.0",
+		"version":      version,
 		"containers":   containers,
 	})
 

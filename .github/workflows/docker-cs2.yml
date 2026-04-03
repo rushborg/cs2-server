@@ -1,4 +1,4 @@
-name: Build CS2 Server Image
+name: Build CS2 Server Image + Agent
 
 on:
   push:
@@ -7,23 +7,12 @@ on:
       - "docker/cs2-server/**"
       - "agent/**"
   workflow_dispatch:
-    inputs:
-      metamod_url:
-        description: "MetaMod download URL (leave empty for default)"
-        required: false
-      sourcemod_url:
-        description: "SourceMod download URL (leave empty for default)"
-        required: false
-      get5_version:
-        description: "get5 version (e.g. 0.15.0)"
-        required: false
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/cs2-server
 
 jobs:
-  # CS2 Docker image — built on self-hosted runner (image is ~35GB)
   build-cs2-image:
     runs-on: self-hosted
     permissions:
@@ -40,9 +29,6 @@ jobs:
         working-directory: docker/cs2-server
         run: |
           docker build \
-            --build-arg METAMOD_URL="${{ github.event.inputs.metamod_url || '' }}" \
-            --build-arg SOURCEMOD_URL="${{ github.event.inputs.sourcemod_url || '' }}" \
-            --build-arg GET5_VERSION="${{ github.event.inputs.get5_version || '' }}" \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest \
             .
@@ -56,7 +42,6 @@ jobs:
         run: |
           docker image prune -f --filter "until=48h" || true
 
-  # Agent binary — built on GitHub-hosted runners (small Go binary)
   build-agent:
     runs-on: ubuntu-latest
     strategy:
@@ -68,7 +53,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: "1.24"
 
       - name: Build agent
         working-directory: agent
