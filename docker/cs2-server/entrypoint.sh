@@ -1,107 +1,22 @@
 #!/bin/bash
 # RUSH-B.ORG CS2 Server Entrypoint
-# Stack: MetaMod + CounterStrikeSharp + MatchZy (get5-compatible)
+# CS2 base + plugins are pre-installed via agent's setupBase() into overlayfs.
+# This entrypoint only applies per-instance configs and starts CS2.
 
 CS2_DIR=/home/steam/cs2-dedicated
 CSGO_DIR="${CS2_DIR}/game/csgo"
-PLUGIN_MARKER="${CSGO_DIR}/addons/.rushborg-plugins-installed"
 
-# Plugin URLs — update these when new versions release
-METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux.tar.gz"
-CSSHARP_URL="https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.364/counterstrikesharp-with-runtime-linux-1.0.364.zip"
-MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15.zip"
-
-# ─── Install/update CS2 ──────────────────────────────────
+# ─── Verify CS2 is present ──────────────────────────────
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-    echo "[RUSH-B.ORG] CS2 not installed, running SteamCMD..."
-    /home/steam/steamcmd/steamcmd.sh \
-        +force_install_dir "${CS2_DIR}" \
-        +login anonymous \
-        +app_update 730 validate \
-        +quit || true
-    # Retry once (SteamCMD self-update)
-    if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-        /home/steam/steamcmd/steamcmd.sh \
-            +force_install_dir "${CS2_DIR}" \
-            +login anonymous \
-            +app_update 730 validate \
-            +quit || true
-    fi
+    echo "[RUSH-B.ORG] ERROR: CS2 not found at ${CS2_DIR}"
+    echo "  CS2 base must be installed via agent setup_base command"
+    exit 1
 fi
 
-# ─── Fix steamclient.so (SteamCMD version → CS2 bin) ─────
+# ─── Fix steamclient.so (if SteamCMD version available) ─
 if [ -f "/home/steam/steamcmd/linux64/steamclient.so" ] && [ -d "${CS2_DIR}/game/bin/linuxsteamrt64/" ]; then
     cp -f /home/steam/steamcmd/linux64/steamclient.so "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" 2>/dev/null || true
     echo "[RUSH-B.ORG] steamclient.so updated"
-fi
-
-# ─── Install plugins (once) ──────────────────────────────
-if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
-    echo "[RUSH-B.ORG] Installing MetaMod..."
-    curl -fsSL "${METAMOD_URL}" | tar xz -C "${CSGO_DIR}/" 2>/dev/null || echo "  MetaMod install failed"
-
-    echo "[RUSH-B.ORG] Installing CounterStrikeSharp..."
-    TMPZIP="/tmp/cssharp.zip"
-    curl -fsSL -o "${TMPZIP}" "${CSSHARP_URL}" 2>/dev/null
-    if [ -f "${TMPZIP}" ]; then
-        cd "${CSGO_DIR}" && unzip -o "${TMPZIP}" 2>/dev/null || echo "  CSSharp extract failed"
-        rm -f "${TMPZIP}"
-        echo "  CounterStrikeSharp installed"
-    else
-        echo "  CounterStrikeSharp download failed"
-    fi
-
-    echo "[RUSH-B.ORG] Installing MatchZy plugin..."
-    TMPZIP="/tmp/matchzy.zip"
-    curl -fsSL -o "${TMPZIP}" "${MATCHZY_URL}" 2>/dev/null
-    if [ -f "${TMPZIP}" ]; then
-        cd "${CSGO_DIR}" && unzip -o "${TMPZIP}" 2>/dev/null || echo "  MatchZy extract failed"
-        rm -f "${TMPZIP}"
-        echo "  MatchZy installed"
-    else
-        echo "  MatchZy download failed"
-    fi
-
-    # Fix permissions — tar preserves original owner, CS2 runs as steam
-    chmod -R 755 "${CSGO_DIR}/addons/" 2>/dev/null || true
-
-    # Clear execstack flag — older kernels block executable stack even with seccomp off
-    CSSHARP_SO="${CSGO_DIR}/addons/counterstrikesharp/bin/linuxsteamrt64/counterstrikesharp.so"
-    if [ -f "${CSSHARP_SO}" ] && command -v execstack >/dev/null 2>&1; then
-        execstack -c "${CSSHARP_SO}" 2>/dev/null && echo "  execstack cleared on counterstrikesharp.so"
-    elif [ -f "${CSSHARP_SO}" ] && command -v patchelf >/dev/null 2>&1; then
-        patchelf --clear-execstack "${CSSHARP_SO}" 2>/dev/null && echo "  execstack cleared via patchelf"
-    fi
-
-    # Register CounterStrikeSharp in MetaMod (MatchZy bundle may not include this)
-    if [ -d "${CSGO_DIR}/addons/counterstrikesharp/bin" ] && [ ! -f "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" ]; then
-        cat > "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" << 'VDFEOF'
-"Plugin"
-{
-	"file"	"addons/counterstrikesharp/bin/linuxsteamrt64/counterstrikesharp"
-}
-VDFEOF
-        echo "  CounterStrikeSharp registered in MetaMod"
-    fi
-
-    touch "${PLUGIN_MARKER}"
-    echo "[RUSH-B.ORG] Plugins installed"
-fi
-
-# ─── Patch gameinfo.gi for MetaMod (idempotent) ─────────
-GAMEINFO="${CSGO_DIR}/gameinfo.gi"
-if [ -f "${GAMEINFO}" ] && [ -d "${CSGO_DIR}/addons/metamod" ]; then
-    if ! grep -q "metamod" "${GAMEINFO}"; then
-        echo "[RUSH-B.ORG] Patching gameinfo.gi for MetaMod..."
-        sed -i '/Game_LowViolence/a\\t\t\tGame\tcsgo/addons/metamod' "${GAMEINFO}"
-        if grep -q "metamod" "${GAMEINFO}"; then
-            echo "  gameinfo.gi patched successfully"
-        else
-            echo "  WARNING: gameinfo.gi patch failed"
-        fi
-    else
-        echo "[RUSH-B.ORG] gameinfo.gi already has MetaMod entry"
-    fi
 fi
 
 # ─── Copy configs ─────────────────────────────────────────

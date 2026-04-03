@@ -71,6 +71,8 @@ var allowedCommands = map[string]bool{
 	"stop_server":         true,
 	"remove_server":       true,
 	"restart_server":      true,
+	"setup_base":          true,
+	"update_base":         true,
 	"update_image":        true,
 	"sync_admins":         true,
 	"restart_idle_servers": true,
@@ -132,6 +134,12 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interf
 			return nil, fmt.Errorf("invalid restart payload: %w", err)
 		}
 		return h.restartServer(p.Port)
+
+	case "setup_base":
+		return h.setupBase()
+
+	case "update_base":
+		return h.updateBase()
 
 	case "update_image":
 		var p UpdateImagePayload
@@ -232,17 +240,31 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		return nil, fmt.Errorf("invalid port: %d (must be 1024-65535)", p.Port)
 	}
 
+	// Ensure CS2 base is installed
+	if !h.isBaseInstalled() {
+		if _, err := h.setupBase(); err != nil {
+			return nil, fmt.Errorf("setup base: %w", err)
+		}
+	}
+
 	dir := h.instanceDir(p.Port)
 	configDir := filepath.Join(dir, "config")
+	demosDir := filepath.Join(dir, "demos")
 
 	// Create directories
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return nil, fmt.Errorf("creating instance dir: %w", err)
 	}
+	os.MkdirAll(demosDir, 0o755)
 
 	// Ensure shared dir exists
 	sharedDir := filepath.Join(h.DataDir, "shared")
 	os.MkdirAll(sharedDir, 0o755)
+
+	// Mount overlayfs for this instance
+	if err := h.mountOverlay(p.Port); err != nil {
+		return nil, fmt.Errorf("mount overlay: %w", err)
+	}
 
 	// Write server.cfg (with size limit and basic validation)
 	if p.ServerCfg != "" {
@@ -266,7 +288,7 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	if gotvPort == 0 {
 		gotvPort = p.Port + 5
 	}
-	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken)
+	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken, h.DataDir)
 	if err != nil {
 		return nil, fmt.Errorf("generating compose file: %w", err)
 	}
@@ -298,10 +320,13 @@ func (h *Handler) stopServer(port int) (interface{}, error) {
 
 func (h *Handler) removeServer(port int) (interface{}, error) {
 	dir := h.instanceDir(port)
-	out, err := h.runCompose(dir, "down", "-v")
+	// Stop and remove container (no -v since we use bind mounts now)
+	out, err := h.runCompose(dir, "down")
 	if err != nil {
 		return nil, fmt.Errorf("docker compose down: %w\noutput: %s", err, out)
 	}
+	// Unmount overlay before removing directory
+	h.unmountOverlay(port)
 	os.RemoveAll(dir)
 	return map[string]string{"status": "removed"}, nil
 }
@@ -529,6 +554,215 @@ func (h *Handler) getStatus() (interface{}, error) {
 		})
 	}
 	return containers, nil
+}
+
+// ─── Shared CS2 Base + OverlayFS ────────────────────────
+
+func (h *Handler) baseDir() string {
+	return filepath.Join(h.DataDir, "cs2-base")
+}
+
+func (h *Handler) isBaseInstalled() bool {
+	_, err := os.Stat(filepath.Join(h.baseDir(), "game", "bin", "linuxsteamrt64", "cs2"))
+	return err == nil
+}
+
+// setupBase installs CS2 + plugins into a shared base directory.
+// Run once per host; subsequent servers reuse this base via overlayfs.
+func (h *Handler) setupBase() (interface{}, error) {
+	base := h.baseDir()
+	os.MkdirAll(base, 0o755)
+
+	// 1. Install/update CS2 via SteamCMD Docker container
+	steamcmdArgs := []string{
+		"run", "--rm",
+		"-v", base + ":/home/steam/cs2-dedicated",
+		"cm2network/steamcmd:root",
+		"/home/steam/steamcmd/steamcmd.sh",
+		"+force_install_dir", "/home/steam/cs2-dedicated",
+		"+login", "anonymous",
+		"+app_update", "730", "validate",
+		"+quit",
+	}
+	cmd := exec.Command("docker", steamcmdArgs...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// SteamCMD often exits non-zero on first run (self-update), retry
+		cmd = exec.Command("docker", steamcmdArgs...)
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("steamcmd install: %w\noutput: %s", err, string(out))
+		}
+	}
+
+	csgoDir := filepath.Join(base, "game", "csgo")
+
+	// 2. Fix steamclient.so
+	steamclientSrc := filepath.Join(base, "..", "steamcmd", "linux64", "steamclient.so")
+	steamclientDst := filepath.Join(base, "game", "bin", "linuxsteamrt64", "steamclient.so")
+	// Try to copy from a SteamCMD installation if available
+	exec.Command("docker", "run", "--rm",
+		"-v", base+":/cs2",
+		"cm2network/steamcmd:root",
+		"cp", "/home/steam/steamcmd/linux64/steamclient.so", "/cs2/game/bin/linuxsteamrt64/steamclient.so",
+	).Run()
+	_ = steamclientSrc
+	_ = steamclientDst
+
+	// 3. Install MetaMod
+	metamodURL := "https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux.tar.gz"
+	exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL '%s' | tar xz -C '%s/'", metamodURL, csgoDir)).Run()
+
+	// 4. Install CounterStrikeSharp
+	cssharpURL := "https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.364/counterstrikesharp-with-runtime-linux-1.0.364.zip"
+	exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL -o /tmp/cssharp.zip '%s' && cd '%s' && unzip -o /tmp/cssharp.zip && rm /tmp/cssharp.zip", cssharpURL, csgoDir)).Run()
+
+	// 5. Install MatchZy
+	matchzyURL := "https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15.zip"
+	exec.Command("sh", "-c", fmt.Sprintf("curl -fsSL -o /tmp/matchzy.zip '%s' && cd '%s' && unzip -o /tmp/matchzy.zip && rm /tmp/matchzy.zip", matchzyURL, csgoDir)).Run()
+
+	// 6. Patch gameinfo.gi for MetaMod
+	gameinfoPath := filepath.Join(csgoDir, "gameinfo.gi")
+	if data, err := os.ReadFile(gameinfoPath); err == nil {
+		if !strings.Contains(string(data), "metamod") {
+			patched := strings.Replace(string(data),
+				"Game_LowViolence",
+				"Game_LowViolence\tcsgo_lv // Perfect World content override\n\t\t\tGame\tcsgo/addons/metamod",
+				1)
+			// Only write if we actually changed something beyond what was there
+			if strings.Contains(patched, "csgo/addons/metamod") {
+				os.WriteFile(gameinfoPath, []byte(patched), 0o644)
+			}
+		}
+	}
+
+	// 7. Fix permissions
+	exec.Command("chmod", "-R", "755", filepath.Join(csgoDir, "addons")).Run()
+
+	// 8. Create core.json for CSSharp
+	configsDir := filepath.Join(csgoDir, "addons", "counterstrikesharp", "configs")
+	coreJSON := filepath.Join(configsDir, "core.json")
+	coreExample := filepath.Join(configsDir, "core.example.json")
+	if _, err := os.Stat(coreJSON); os.IsNotExist(err) {
+		if data, err := os.ReadFile(coreExample); err == nil {
+			os.WriteFile(coreJSON, data, 0o644)
+		}
+	}
+
+	return map[string]string{"status": "base_installed", "path": base}, nil
+}
+
+// updateBase updates the shared CS2 base (SteamCMD + plugins).
+// Stops all servers, updates, remounts overlays, restarts.
+func (h *Handler) updateBase() (interface{}, error) {
+	// 1. Get running instances
+	instances, _ := h.listInstancePorts()
+
+	// 2. Stop all containers
+	for _, port := range instances {
+		h.stopServer(port)
+	}
+
+	// 3. Unmount all overlays
+	for _, port := range instances {
+		h.unmountOverlay(port)
+	}
+
+	// 4. Update base
+	result, err := h.setupBase()
+	if err != nil {
+		return nil, fmt.Errorf("update base failed: %w", err)
+	}
+
+	// 5. Remount overlays and restart
+	for _, port := range instances {
+		h.mountOverlay(port)
+		dir := h.instanceDir(port)
+		h.runCompose(dir, "up", "-d")
+	}
+
+	return result, nil
+}
+
+func (h *Handler) listInstancePorts() ([]int, error) {
+	instancesDir := filepath.Join(h.DataDir, "instances")
+	entries, err := os.ReadDir(instancesDir)
+	if err != nil {
+		return nil, err
+	}
+	var ports []int
+	for _, e := range entries {
+		if e.IsDir() {
+			var port int
+			if _, err := fmt.Sscanf(e.Name(), "%d", &port); err == nil && port >= 1024 {
+				ports = append(ports, port)
+			}
+		}
+	}
+	return ports, nil
+}
+
+func (h *Handler) mountOverlay(port int) error {
+	base := h.baseDir()
+	inst := h.instanceDir(port)
+	upper := filepath.Join(inst, "overlay-upper")
+	work := filepath.Join(inst, "overlay-work")
+	merged := filepath.Join(inst, "cs2-merged")
+
+	os.MkdirAll(upper, 0o755)
+	os.MkdirAll(work, 0o755)
+	os.MkdirAll(merged, 0o755)
+
+	// Check if already mounted
+	if h.isOverlayMounted(port) {
+		return nil
+	}
+
+	cmd := exec.Command("mount", "-t", "overlay", "overlay",
+		"-o", fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", base, upper, work),
+		merged)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mount overlay: %w\noutput: %s", err, string(out))
+	}
+	return nil
+}
+
+func (h *Handler) unmountOverlay(port int) error {
+	merged := filepath.Join(h.instanceDir(port), "cs2-merged")
+	if !h.isOverlayMounted(port) {
+		return nil
+	}
+	cmd := exec.Command("umount", merged)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("umount overlay: %w\noutput: %s", err, string(out))
+	}
+	return nil
+}
+
+func (h *Handler) isOverlayMounted(port int) bool {
+	merged := filepath.Join(h.instanceDir(port), "cs2-merged")
+	out, err := exec.Command("mountpoint", "-q", merged).CombinedOutput()
+	_ = out
+	return err == nil
+}
+
+// RemountAllOverlays re-mounts overlays for all instances.
+// Called on agent startup to recover from host reboot.
+func (h *Handler) RemountAllOverlays() {
+	if !h.isBaseInstalled() {
+		return
+	}
+	ports, err := h.listInstancePorts()
+	if err != nil {
+		return
+	}
+	for _, port := range ports {
+		if _, err := os.Stat(filepath.Join(h.instanceDir(port), "overlay-upper")); err == nil {
+			h.mountOverlay(port)
+		}
+	}
 }
 
 func (h *Handler) runCompose(dir string, args ...string) (string, error) {
