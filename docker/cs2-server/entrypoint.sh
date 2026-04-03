@@ -53,6 +53,14 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     # Fix permissions — tar preserves original owner, CS2 runs as steam
     chmod -R 755 "${CSGO_DIR}/addons/" 2>/dev/null || true
 
+    # Clear execstack flag — older kernels block executable stack even with seccomp off
+    CSSHARP_SO="${CSGO_DIR}/addons/counterstrikesharp/bin/linuxsteamrt64/counterstrikesharp.so"
+    if [ -f "${CSSHARP_SO}" ] && command -v execstack >/dev/null 2>&1; then
+        execstack -c "${CSSHARP_SO}" 2>/dev/null && echo "  execstack cleared on counterstrikesharp.so"
+    elif [ -f "${CSSHARP_SO}" ] && command -v patchelf >/dev/null 2>&1; then
+        patchelf --clear-execstack "${CSSHARP_SO}" 2>/dev/null && echo "  execstack cleared via patchelf"
+    fi
+
     # Register CounterStrikeSharp in MetaMod (MatchZy bundle may not include this)
     if [ -d "${CSGO_DIR}/addons/counterstrikesharp/bin" ] && [ ! -f "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" ]; then
         cat > "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" << 'VDFEOF'
