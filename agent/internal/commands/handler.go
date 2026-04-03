@@ -75,6 +75,12 @@ var allowedCommands = map[string]bool{
 	"install_map":         true,
 	"remove_map":          true,
 	"get_status":          true,
+	"get_logs":            true,
+}
+
+type GetLogsPayload struct {
+	Port int `json:"port"`
+	Tail int `json:"tail"`
 }
 
 // Max concurrent containers per host
@@ -163,6 +169,13 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interf
 			return nil, fmt.Errorf("invalid remove_map payload: %w", err)
 		}
 		return h.removeFile(p, "maps")
+
+	case "get_logs":
+		var p GetLogsPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("invalid get_logs payload: %w", err)
+		}
+		return h.getLogs(p)
 
 	case "get_status":
 		return h.getStatus()
@@ -373,6 +386,27 @@ func (h *Handler) removeFile(p RemoveFilePayload, subdir string) (interface{}, e
 		return nil, fmt.Errorf("removing %s: %w", p.Filename, err)
 	}
 	return map[string]string{"status": "removed", "filename": p.Filename}, nil
+}
+
+func (h *Handler) getLogs(p GetLogsPayload) (interface{}, error) {
+	if p.Port < 1024 || p.Port > 65535 {
+		return nil, fmt.Errorf("invalid port: %d", p.Port)
+	}
+	tail := p.Tail
+	if tail <= 0 || tail > 500 {
+		tail = 100
+	}
+	containerName := fmt.Sprintf("cs2-%d", p.Port)
+	cmd := exec.Command("docker", "logs", "--tail", fmt.Sprintf("%d", tail), containerName)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("docker logs: %w", err)
+	}
+	return map[string]string{
+		"container": containerName,
+		"logs":      string(out),
+		"lines":     fmt.Sprintf("%d", tail),
+	}, nil
 }
 
 func (h *Handler) getStatus() (interface{}, error) {
