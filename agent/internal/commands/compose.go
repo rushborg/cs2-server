@@ -30,6 +30,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
       - CS2_PORT=%d
       - CS2_GOTV_PORT=%d
       - CS2_MAP=de_mirage
+      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
     volumes:
       - cs2-%d-data:/home/steam/cs2-dedicated
       - ./config:/instance/config:ro
