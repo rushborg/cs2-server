@@ -1,21 +1,17 @@
 #!/bin/bash
 # RUSH-B.ORG CS2 Server Entrypoint
-# 1. Install/update CS2 via SteamCMD
-# 2. Install plugins if not present
-# 3. Start CS2
-# 4. Background task copies configs after CS2 creates cfg directory
+# Stack: MetaMod + CounterStrikeSharp + MatchZy (get5-compatible)
 
 CS2_DIR=/home/steam/cs2-dedicated
 CSGO_DIR="${CS2_DIR}/game/csgo"
 PLUGIN_MARKER="${CSGO_DIR}/addons/.rushborg-plugins-installed"
 
-# Plugin URLs
+# Plugin URLs — update these when new versions release
 METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1313-linux.tar.gz"
-SOURCEMOD_URL="https://sm.alliedmods.net/smdrop/1.12/sourcemod-1.12.0-git7178-linux.tar.gz"
-GET5_URL="https://github.com/splewis/get5/releases/download/v0.15.0/get5_v0.15.0.tar.gz"
+MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15-with-cssharp-linux.zip"
 
 # ─── Install/update CS2 ──────────────────────────────────
-if [ ! -f "${CSGO_DIR}/bin/linuxsteamrt64/libserver.so" ]; then
+if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
     echo "[RUSH-B.ORG] CS2 not installed, running SteamCMD..."
     /home/steam/steamcmd/steamcmd.sh \
         +force_install_dir "${CS2_DIR}" \
@@ -23,7 +19,7 @@ if [ ! -f "${CSGO_DIR}/bin/linuxsteamrt64/libserver.so" ]; then
         +app_update 730 validate \
         +quit || true
     # Retry once (SteamCMD self-update)
-    if [ ! -f "${CSGO_DIR}/bin/linuxsteamrt64/libserver.so" ]; then
+    if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
         /home/steam/steamcmd/steamcmd.sh \
             +force_install_dir "${CS2_DIR}" \
             +login anonymous \
@@ -37,17 +33,22 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     echo "[RUSH-B.ORG] Installing MetaMod..."
     curl -fsSL "${METAMOD_URL}" | tar xz -C "${CSGO_DIR}/" 2>/dev/null || echo "  MetaMod install failed"
 
-    echo "[RUSH-B.ORG] Installing SourceMod..."
-    curl -fsSL "${SOURCEMOD_URL}" | tar xz -C "${CSGO_DIR}/" 2>/dev/null || echo "  SourceMod install failed"
-
-    echo "[RUSH-B.ORG] Installing get5..."
-    curl -fsSL "${GET5_URL}" | tar xz -C "${CSGO_DIR}/" 2>/dev/null || echo "  get5 install failed"
+    echo "[RUSH-B.ORG] Installing MatchZy (with CounterStrikeSharp)..."
+    TMPZIP="/tmp/matchzy.zip"
+    curl -fsSL -o "${TMPZIP}" "${MATCHZY_URL}" 2>/dev/null
+    if [ -f "${TMPZIP}" ]; then
+        cd "${CSGO_DIR}" && unzip -o "${TMPZIP}" 2>/dev/null || echo "  MatchZy extract failed"
+        rm -f "${TMPZIP}"
+        echo "  MatchZy + CounterStrikeSharp installed"
+    else
+        echo "  MatchZy download failed"
+    fi
 
     touch "${PLUGIN_MARKER}"
     echo "[RUSH-B.ORG] Plugins installed"
 fi
 
-# ─── Copy configs NOW (after CS2 + plugins installed) ─────
+# ─── Copy configs ─────────────────────────────────────────
 echo "[RUSH-B.ORG] Applying configs..."
 
 if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
@@ -57,14 +58,14 @@ if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
 fi
 
 if [ -f /shared/admins_simple.ini ] && [ -d "${CSGO_DIR}" ]; then
-    mkdir -p "${CSGO_DIR}/addons/sourcemod/configs"
-    cp -f /shared/admins_simple.ini "${CSGO_DIR}/addons/sourcemod/configs/admins_simple.ini"
-    echo "  admins_simple.ini applied"
+    mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/configs"
+    cp -f /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
 fi
 
 if [ -d /custom/plugins ] && [ -d "${CSGO_DIR}" ]; then
-    mkdir -p "${CSGO_DIR}/addons/sourcemod/plugins"
-    cp -f /custom/plugins/*.smx "${CSGO_DIR}/addons/sourcemod/plugins/" 2>/dev/null || true
+    mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/plugins"
+    cp -f /custom/plugins/*.dll "${CSGO_DIR}/addons/counterstrikesharp/plugins/" 2>/dev/null || true
+    cp -f /custom/plugins/*.smx "${CSGO_DIR}/addons/counterstrikesharp/plugins/" 2>/dev/null || true
     echo "  custom plugins applied"
 fi
 
