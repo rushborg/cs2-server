@@ -664,26 +664,40 @@ func (h *Handler) setupBase() (interface{}, error) {
 	return map[string]string{"status": "base_installed", "path": base}, nil
 }
 
-// updateBase stops all servers, updates CS2 via SteamCMD, restarts.
+// updateBase stops all servers, updates CS2 base, recreates per-instance copies, restarts.
 func (h *Handler) updateBase() (interface{}, error) {
 	instances, _ := h.listInstancePorts()
+	base := filepath.Join(h.DataDir, "cs2-base")
 
-	// Stop all
+	// 1. Stop all containers
 	for _, port := range instances {
 		h.stopServer(port)
 	}
 
-	// Force reinstall by removing marker
-	base := filepath.Join(h.DataDir, "cs2-base")
+	// 2. Remove plugin marker to force plugin reinstall
 	os.Remove(filepath.Join(base, "game", "csgo", "addons", ".rushborg-plugins-installed"))
 
-	// Run setup
+	// 3. Update cs2-base (SteamCMD + plugins)
 	result, err := h.setupBase()
 	if err != nil {
 		return nil, err
 	}
 
-	// Restart all
+	// 4. Recreate per-instance hardlink copies from updated base
+	for _, port := range instances {
+		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
+		// Remove old copy
+		os.RemoveAll(cs2Data)
+		// Create fresh hardlink copy
+		cmd := exec.Command("cp", "-al", base+"/.", cs2Data+"/")
+		if out, cpErr := cmd.CombinedOutput(); cpErr != nil {
+			// Fallback to regular copy
+			exec.Command("cp", "-a", base+"/.", cs2Data+"/").CombinedOutput()
+			_ = out
+		}
+	}
+
+	// 5. Restart all
 	for _, port := range instances {
 		dir := h.instanceDir(port)
 		h.runCompose(dir, "up", "-d")
