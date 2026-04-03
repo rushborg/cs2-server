@@ -28,6 +28,12 @@ if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
     fi
 fi
 
+# ─── Fix steamclient.so (SteamCMD version → CS2 bin) ─────
+if [ -f "/home/steam/steamcmd/linux64/steamclient.so" ] && [ -d "${CS2_DIR}/game/bin/linuxsteamrt64/" ]; then
+    cp -f /home/steam/steamcmd/linux64/steamclient.so "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" 2>/dev/null || true
+    echo "[RUSH-B.ORG] steamclient.so updated"
+fi
+
 # ─── Install plugins (once) ──────────────────────────────
 if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     echo "[RUSH-B.ORG] Installing MetaMod..."

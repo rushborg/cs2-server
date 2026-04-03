@@ -1,18 +1,14 @@
-FROM cm2network/cs2
+FROM cm2network/steamcmd:root
 
-# cm2network/cs2:
-# - Downloads CS2 on FIRST RUN (not during build)
-# - Auto-updates CS2 on each restart
-# - CS2 at /home/steam/cs2-dedicated/
+# Use steamcmd base (always up-to-date SteamCMD)
+# CS2 will be installed on first run into a persistent volume
 
 USER root
-RUN apt-get update -qq && apt-get install -y -qq curl && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -qq && apt-get install -y -qq curl unzip && rm -rf /var/lib/apt/lists/*
 USER steam
 
-# Volume mount points
-VOLUME ["/instance/config", "/shared", "/custom/plugins", "/custom/maps", "/demos"]
+VOLUME ["/home/steam/cs2-dedicated", "/instance/config", "/shared", "/custom/plugins", "/custom/maps", "/demos"]
 
-# Our entrypoint installs plugins on first run, copies configs, then starts CS2
 COPY entrypoint.sh /rushborg-entrypoint.sh
 
 USER root
