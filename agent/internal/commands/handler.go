@@ -475,8 +475,24 @@ func (h *Handler) execRCON(p RCONPayload) (interface{}, error) {
 		return nil, fmt.Errorf("empty command")
 	}
 
+	// Try external IP first (CS2 may bind to specific IP), fallback to localhost
 	addr := fmt.Sprintf("127.0.0.1:%d", p.Port)
 	conn, err := rcon.Dial(addr, p.Password)
+	if err != nil {
+		// CS2 with network_mode:host may bind to external IP only
+		// Try connecting via hostname (resolves to external IP)
+		out, hostErr := exec.Command("hostname", "-I").Output()
+		if hostErr == nil {
+			ip := strings.Fields(strings.TrimSpace(string(out)))
+			if len(ip) > 0 {
+				addr = fmt.Sprintf("%s:%d", ip[0], p.Port)
+				conn, err = rcon.Dial(addr, p.Password)
+			}
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("rcon connect to %s: %w", addr, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("rcon connect: %w", err)
 	}
