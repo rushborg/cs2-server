@@ -27,7 +27,6 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir
 		gsltEnv = fmt.Sprintf("\n      - CS2_GSLT=%s", gsltToken)
 	}
 
-	baseDir := fmt.Sprintf("%s/cs2-base", dataDir)
 	instDir := fmt.Sprintf("%s/instances/%d", dataDir, port)
 	sharedDir := fmt.Sprintf("%s/shared", dataDir)
 
@@ -48,7 +47,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir
       - CS2_GAME_MODE=%d
       - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1%s
     volumes:
-      - %s:/home/steam/cs2-dedicated
+      - %s/cs2-data:/home/steam/cs2-dedicated
       - %s/config:/instance/config:ro
       - %s/data:/instance/data
       - %s:/shared:ro
@@ -60,6 +59,6 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir
       - "rushborg.port=%d"
       - "rushborg.hostname=%s"
 `, image, port, port, gotvPort, maxPlayers, gameType, gameMode, gsltEnv,
-		baseDir, instDir, instDir, sharedDir, sharedDir, sharedDir, instDir,
+		instDir, instDir, instDir, sharedDir, sharedDir, sharedDir, instDir,
 		port, hostname), nil
 }

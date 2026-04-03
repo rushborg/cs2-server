@@ -22,6 +22,7 @@ type Handler struct {
 	DataDir      string // /opt/rushborg-srv
 	DockerImage  string // ghcr.io/rushborg/cs2-server:latest
 	PlatformURL  string // https://rush-b.org — for validating download URLs
+	hostIP       string // cached external IP for connecting to game servers
 }
 
 type DeployPayload struct {
@@ -265,6 +266,7 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	configDir := filepath.Join(dir, "config")
 	dataDir := filepath.Join(dir, "data")
 	demosDir := filepath.Join(dir, "demos")
+	cs2DataDir := filepath.Join(dir, "cs2-data")
 
 	// Create directories
 	for _, d := range []string{configDir, dataDir, demosDir} {
@@ -274,8 +276,25 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	}
 
 	// Ensure shared base and shared dir exist
-	os.MkdirAll(filepath.Join(h.DataDir, "cs2-base"), 0o755)
+	baseDir := filepath.Join(h.DataDir, "cs2-base")
+	os.MkdirAll(baseDir, 0o755)
 	os.MkdirAll(filepath.Join(h.DataDir, "shared"), 0o755)
+
+	// Create per-instance CS2 copy via hardlinks (cp -al).
+	// Hardlinks share disk blocks — no extra space used until files are modified.
+	// Each container gets its own writable copy, no shared state conflicts.
+	if _, err := os.Stat(filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")); os.IsNotExist(err) {
+		if _, err := os.Stat(filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")); err == nil {
+			cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				// Fallback to regular copy if hardlinks not supported
+				cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
+				if out2, err2 := cmd.CombinedOutput(); err2 != nil {
+					return nil, fmt.Errorf("copy cs2-base to instance: %w\noutput: %s %s", err2, out, out2)
+				}
+			}
+		}
+	}
 
 	// Write server.cfg (with size limit and basic validation)
 	if p.ServerCfg != "" {
@@ -475,21 +494,8 @@ func (h *Handler) execRCON(p RCONPayload) (interface{}, error) {
 		return nil, fmt.Errorf("empty command")
 	}
 
-	// Try external IP first (CS2 may bind to specific IP), fallback to localhost
-	addr := fmt.Sprintf("127.0.0.1:%d", p.Port)
+	addr := h.resolveAddr(p.Port)
 	conn, err := rcon.Dial(addr, p.Password)
-	if err != nil {
-		// CS2 with network_mode:host may bind to external IP only
-		// Try connecting via hostname (resolves to external IP)
-		out, hostErr := exec.Command("hostname", "-I").Output()
-		if hostErr == nil {
-			ip := strings.Fields(strings.TrimSpace(string(out)))
-			if len(ip) > 0 {
-				addr = fmt.Sprintf("%s:%d", ip[0], p.Port)
-				conn, err = rcon.Dial(addr, p.Password)
-			}
-		}
-	}
 	if err != nil {
 		return nil, fmt.Errorf("rcon connect to %s: %w", addr, err)
 	}
@@ -506,12 +512,32 @@ func (h *Handler) execRCON(p RCONPayload) (interface{}, error) {
 	return map[string]string{"output": response}, nil
 }
 
+// resolveAddr returns the best address to connect to a local game server.
+// CS2 with +ip 0.0.0.0 listens on all interfaces. Try localhost first,
+// fallback to external IP detected via hostname -I.
+func (h *Handler) resolveAddr(port int) string {
+	// Try to detect external IP (cached after first call)
+	if h.hostIP == "" {
+		out, err := exec.Command("hostname", "-I").Output()
+		if err == nil {
+			ips := strings.Fields(strings.TrimSpace(string(out)))
+			if len(ips) > 0 {
+				h.hostIP = ips[0]
+			}
+		}
+		if h.hostIP == "" {
+			h.hostIP = "127.0.0.1"
+		}
+	}
+	return fmt.Sprintf("%s:%d", h.hostIP, port)
+}
+
 func (h *Handler) queryServer(port int) (interface{}, error) {
 	if port < 1024 || port > 65535 {
 		return nil, fmt.Errorf("invalid port: %d", port)
 	}
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	addr := h.resolveAddr(port)
 	client, err := a2s.NewClient(addr, a2s.SetMaxPacketSize(14000))
 	if err != nil {
 		return map[string]interface{}{"online": false, "error": fmt.Sprintf("connect: %v", err)}, nil
