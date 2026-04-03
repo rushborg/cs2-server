@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "docker/cs2-server/**"
+      - "agent/**"
   workflow_dispatch:
     inputs:
       metamod_url:
