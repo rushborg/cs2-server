@@ -8,7 +8,7 @@ import (
 var safeHostname = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
 
 // GenerateComposeFile creates a docker-compose.yml for a CS2 server instance.
-func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, error) {
+func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken string) (string, error) {
 	if port < 1024 || port > 65535 {
 		return "", fmt.Errorf("invalid port: %d", port)
 	}
@@ -18,6 +18,12 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
 	if !safeHostname.MatchString(hostname) {
 		hostname = fmt.Sprintf("cs2-%d", port) // safe fallback
 	}
+
+	gsltEnv := ""
+	if gsltToken != "" {
+		gsltEnv = fmt.Sprintf("\n      - CS2_GSLT=%s", gsltToken)
+	}
+
 	return fmt.Sprintf(`services:
   cs2:
     image: %s
@@ -30,7 +36,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
       - CS2_PORT=%d
       - CS2_GOTV_PORT=%d
       - CS2_MAP=de_mirage
-      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1%s
     volumes:
       - cs2-%d-data:/home/steam/cs2-dedicated
       - ./config:/instance/config:ro
@@ -46,5 +52,5 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
 volumes:
   cs2-%d-data:
   cs2-%d-demos:
-`, image, port, port, gotvPort, port, port, port, hostname, port, port), nil
+`, image, port, port, gotvPort, gsltEnv, port, port, port, hostname, port, port), nil
 }

@@ -25,7 +25,8 @@ type DeployPayload struct {
 	GOTVPort     int    `json:"gotv_port"`
 	RCONPassword string `json:"rcon_password"`
 	ServerCfg    string `json:"server_cfg"`
-	Get5Cfg      string `json:"get5_cfg"`
+	MatchZyCfg   string `json:"matchzy_cfg"`
+	GsltToken    string `json:"gslt_token"`
 }
 
 type PortPayload struct {
@@ -253,10 +254,10 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		}
 	}
 
-	// Write get5.cfg
-	if p.Get5Cfg != "" {
-		if err := os.WriteFile(filepath.Join(configDir, "get5.cfg"), []byte(p.Get5Cfg), 0o600); err != nil {
-			return nil, fmt.Errorf("writing get5.cfg: %w", err)
+	// Write matchzy.cfg
+	if p.MatchZyCfg != "" {
+		if err := os.WriteFile(filepath.Join(configDir, "matchzy.cfg"), []byte(p.MatchZyCfg), 0o600); err != nil {
+			return nil, fmt.Errorf("writing matchzy.cfg: %w", err)
 		}
 	}
 
@@ -265,7 +266,7 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	if gotvPort == 0 {
 		gotvPort = p.Port + 5
 	}
-	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname)
+	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken)
 	if err != nil {
 		return nil, fmt.Errorf("generating compose file: %w", err)
 	}
