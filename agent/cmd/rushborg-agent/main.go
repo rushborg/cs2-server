@@ -68,9 +68,9 @@ func main() {
 	// Start connection in background
 	go client.Run()
 
-	// Heartbeat ticker — sends health + container status every 30s
+	// Heartbeat ticker — sends health + container status every 10s
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
 		// Send immediately on start
