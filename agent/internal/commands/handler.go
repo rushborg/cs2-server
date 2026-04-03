@@ -636,9 +636,9 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 		downloadURL = "https://github.com/rushborg/cs2-server/releases/download/agent-latest/rushborg-agent-amd64"
 	}
 
-	// Only allow GitHub or platform URLs
-	if !strings.HasPrefix(downloadURL, "https://github.com/") &&
-		!strings.HasPrefix(downloadURL, h.PlatformURL) {
+	// Only allow rushborg GitHub releases or platform URLs
+	if !strings.HasPrefix(downloadURL, "https://github.com/rushborg/") &&
+		(h.PlatformURL == "" || !strings.HasPrefix(downloadURL, h.PlatformURL)) {
 		return nil, fmt.Errorf("download URL not allowed: %s", downloadURL)
 	}
 

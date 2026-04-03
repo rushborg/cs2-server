@@ -62,7 +62,7 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     fi
 
     # Fix permissions
-    chmod -R 777 "${CSGO_DIR}/addons/" 2>/dev/null || true
+    chmod -R 755 "${CSGO_DIR}/addons/" 2>/dev/null || true
 
     # Create core.json for CSSharp
     if [ -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json" ] && \
