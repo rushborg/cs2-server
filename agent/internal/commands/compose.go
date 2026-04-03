@@ -29,6 +29,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
       - CS2_GOTV_PORT=%d
       - CS2_MAP=de_mirage
     volumes:
+      - cs2-%d-data:/home/steam/cs2-dedicated
       - ./config:/instance/config:ro
       - ../../shared:/shared:ro
       - ../../shared/plugins:/custom/plugins:ro
@@ -40,6 +41,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
       - "rushborg.hostname=%s"
 
 volumes:
+  cs2-%d-data:
   cs2-%d-demos:
-`, image, port, port, gotvPort, port, port, hostname, port), nil
+`, image, port, port, gotvPort, port, port, port, hostname, port, port), nil
 }
