@@ -127,9 +127,11 @@ if [ -d "${CSSHARP_DIR}" ]; then
         ln -sfn "${INSTANCE_DATA}/cssharp-data/plugins-cfg" "${CSSHARP_DIR}/configs/plugins"
     fi
 
-    # CSSharp log file
-    touch "${CSSHARP_DIR}/counterstrikesharp.log" 2>/dev/null || true
-    chmod 666 "${CSSHARP_DIR}/counterstrikesharp.log" 2>/dev/null || true
+    # CSSharp log file (only create if missing — don't touch existing shared file)
+    if [ ! -f "${CSSHARP_DIR}/counterstrikesharp.log" ]; then
+        touch "${CSSHARP_DIR}/counterstrikesharp.log" 2>/dev/null || true
+        chmod 666 "${CSSHARP_DIR}/counterstrikesharp.log" 2>/dev/null || true
+    fi
 fi
 
 # CS2 server logs
@@ -138,17 +140,31 @@ if [ -d "${CSGO_DIR}" ] && [ ! -L "${CSGO_DIR}/logs" ]; then
     ln -sfn "${INSTANCE_DATA}/logs" "${CSGO_DIR}/logs"
 fi
 
-# ─── Copy configs ─────────────────────────────────────────
+# ─── Per-instance cfg directory ──────────────────────────
+# cs2-base is SHARED — server.cfg has unique RCON passwords per instance.
+# Redirect cfg/ to per-instance storage via symlink.
+# The symlink target /instance/data/cfg resolves to each container's
+# own bind mount, so all containers see their own configs.
 log " Applying configs..."
 
-if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
-    mkdir -p "${CSGO_DIR}/cfg"
-    cp -f /instance/config/*.cfg "${CSGO_DIR}/cfg/" 2>/dev/null || true
+mkdir -p "${INSTANCE_DATA}/cfg"
+
+# First time: copy base cfgs to instance, replace dir with symlink
+if [ -d "${CSGO_DIR}/cfg" ] && [ ! -L "${CSGO_DIR}/cfg" ]; then
+    cp -a "${CSGO_DIR}/cfg/"* "${INSTANCE_DATA}/cfg/" 2>/dev/null || true
+    rm -rf "${CSGO_DIR}/cfg"
+fi
+# Create/update symlink (atomic — safe for concurrent containers)
+ln -sfn "${INSTANCE_DATA}/cfg" "${CSGO_DIR}/cfg"
+
+# Copy instance-specific configs (server.cfg, matchzy.cfg)
+if [ -d /instance/config ]; then
+    cp -f /instance/config/*.cfg "${INSTANCE_DATA}/cfg/" 2>/dev/null || true
 fi
 
-# Override MatchZy config.cfg defaults with platform values
-MATCHZY_CFG="${CSGO_DIR}/cfg/MatchZy/config.cfg"
-if [ -f "${MATCHZY_CFG}" ]; then
+# Override MatchZy config.cfg with platform values (now in per-instance cfg/)
+MATCHZY_CFG="${INSTANCE_DATA}/cfg/MatchZy/config.cfg"
+if [ -f "${MATCHZY_CFG}" ] && ! grep -q "RUSH-B.ORG" "${MATCHZY_CFG}" 2>/dev/null; then
     sed -i 's|^matchzy_chat_prefix.*|matchzy_chat_prefix [{Green}RUSH-B.ORG{Default}]|' "${MATCHZY_CFG}"
     log " MatchZy chat prefix set to [RUSH-B.ORG]"
 fi
