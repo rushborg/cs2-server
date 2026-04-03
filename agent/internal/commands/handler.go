@@ -38,8 +38,7 @@ type UpdateImagePayload struct {
 }
 
 type UpdateAgentPayload struct {
-	DownloadURL string `json:"download_url"` // Platform URL to download new binary
-	AuthToken   string `json:"auth_token"`   // Bearer token for authenticated download
+	DownloadURL string `json:"download_url"` // Direct URL or GitHub release URL
 }
 
 type SyncAdminsPayload struct {
@@ -622,25 +621,26 @@ func (h *Handler) updateBase() (interface{}, error) {
 	return result, nil
 }
 
-// updateAgent downloads a new agent binary and restarts via systemctl.
+// updateAgent downloads a new agent binary from GitHub Release and restarts.
 func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
-	if p.DownloadURL == "" {
-		return nil, fmt.Errorf("download_url is required")
+	downloadURL := p.DownloadURL
+	if downloadURL == "" {
+		// Default: latest release from GitHub
+		downloadURL = "https://github.com/rushborg/cs2-server/releases/download/agent-latest/rushborg-agent-amd64"
 	}
-	// Validate URL belongs to our platform
-	if h.PlatformURL != "" && !strings.HasPrefix(p.DownloadURL, h.PlatformURL) {
-		return nil, fmt.Errorf("download URL does not match platform")
+
+	// Only allow GitHub or platform URLs
+	if !strings.HasPrefix(downloadURL, "https://github.com/") &&
+		!strings.HasPrefix(downloadURL, h.PlatformURL) {
+		return nil, fmt.Errorf("download URL not allowed: %s", downloadURL)
 	}
 
 	tmpPath := "/tmp/rushborg-agent-new"
 	binPath := "/usr/local/bin/rushborg-agent"
 
-	// Download new binary
+	// Download new binary (-L follows redirects for GitHub releases)
 	args := []string{"-fsSL", "--max-time", "120", "-o", tmpPath}
-	if p.AuthToken != "" {
-		args = append(args, "-H", "Authorization: Bearer "+p.AuthToken)
-	}
-	args = append(args, p.DownloadURL)
+	args = append(args, downloadURL)
 	cmd := exec.Command("curl", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
