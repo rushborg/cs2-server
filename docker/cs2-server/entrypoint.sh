@@ -185,6 +185,7 @@ chown -R steam:steam "${INSTANCE_DATA}" 2>/dev/null || true
 
 # Drop to steam user for CS2 process (security: CS2 never runs as root)
 exec gosu steam "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
+    +ip 0.0.0.0 \
     -port "${CS2_PORT:-27015}" \
     +tv_port "${CS2_GOTV_PORT:-27020}" \
     -maxplayers "${CS2_MAXPLAYERS:-10}" \
