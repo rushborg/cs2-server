@@ -50,6 +50,20 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
         echo "  MatchZy download failed"
     fi
 
+    # Fix permissions — tar preserves original owner, CS2 runs as steam
+    chmod -R 755 "${CSGO_DIR}/addons/" 2>/dev/null || true
+
+    # Register CounterStrikeSharp in MetaMod (MatchZy bundle may not include this)
+    if [ -d "${CSGO_DIR}/addons/counterstrikesharp/bin" ] && [ ! -f "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" ]; then
+        cat > "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" << 'VDFEOF'
+"Plugin"
+{
+	"file"	"../counterstrikesharp/bin/linuxsteamrt64/counterstrikesharp"
+}
+VDFEOF
+        echo "  CounterStrikeSharp registered in MetaMod"
+    fi
+
     touch "${PLUGIN_MARKER}"
     echo "[RUSH-B.ORG] Plugins installed"
 fi
