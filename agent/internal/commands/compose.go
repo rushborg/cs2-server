@@ -24,6 +24,8 @@ func GenerateComposeFile(port, gotvPort int, image, hostname string) (string, er
     container_name: cs2-%d
     network_mode: host
     restart: unless-stopped
+    security_opt:
+      - seccomp:unconfined
     environment:
       - CS2_PORT=%d
       - CS2_GOTV_PORT=%d
