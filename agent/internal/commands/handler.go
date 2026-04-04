@@ -108,11 +108,18 @@ var allowedCommands = map[string]bool{
 	"get_logs":            true,
 	"query_server":        true,
 	"exec_rcon":           true,
+	"get_base_status":     true,
+	"get_agent_logs":      true,
+	"validate_base":       true,
 }
 
 type GetLogsPayload struct {
 	Port int `json:"port"`
 	Tail int `json:"tail"`
+}
+
+type GetAgentLogsPayload struct {
+	Lines int `json:"lines"`
 }
 
 type RCONPayload struct {
@@ -244,6 +251,19 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interf
 
 	case "get_status":
 		return h.getStatus()
+
+	case "get_base_status":
+		return h.getBaseStatus()
+
+	case "get_agent_logs":
+		var p GetAgentLogsPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			return nil, fmt.Errorf("invalid get_agent_logs payload: %w", err)
+		}
+		return h.getAgentLogs(p)
+
+	case "validate_base":
+		return h.validateBase()
 
 	default:
 		return nil, fmt.Errorf("unknown command: %s", cmdType)
@@ -819,6 +839,90 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 	}()
 
 	return map[string]string{"status": "updating", "message": "agent will restart in ~1s"}, nil
+}
+
+// getBaseStatus returns info about the shared cs2-base directory.
+func (h *Handler) getBaseStatus() (interface{}, error) {
+	base := filepath.Join(h.DataDir, "cs2-base")
+	cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
+
+	result := map[string]interface{}{
+		"installed": false,
+		"path":      base,
+	}
+
+	if _, err := os.Stat(cs2Binary); err == nil {
+		result["installed"] = true
+
+		// Get directory size via du
+		cmd := exec.Command("du", "-sh", base)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			parts := strings.Fields(string(out))
+			if len(parts) >= 1 {
+				result["size"] = parts[0]
+			}
+		}
+
+		// Check for version file or game info
+		versionFile := filepath.Join(base, "game", "csgo", "steam.inf")
+		if data, err := os.ReadFile(versionFile); err == nil {
+			for _, line := range strings.Split(string(data), "\n") {
+				if strings.HasPrefix(line, "PatchVersion=") {
+					result["version"] = strings.TrimPrefix(line, "PatchVersion=")
+					break
+				}
+			}
+		}
+	}
+
+	return result, nil
+}
+
+// getAgentLogs returns the last N lines from journalctl for the agent service.
+func (h *Handler) getAgentLogs(p GetAgentLogsPayload) (interface{}, error) {
+	lines := p.Lines
+	if lines <= 0 || lines > 500 {
+		lines = 100
+	}
+	cmd := exec.Command("journalctl", "-u", "rushborg-agent", "--no-pager", "-n", fmt.Sprintf("%d", lines))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("journalctl: %w\noutput: %s", err, string(out))
+	}
+	return map[string]interface{}{
+		"logs":  string(out),
+		"lines": lines,
+	}, nil
+}
+
+// validateBase runs steamcmd validate on the cs2-base in background.
+func (h *Handler) validateBase() (interface{}, error) {
+	base := filepath.Join(h.DataDir, "cs2-base")
+
+	steamcmdPath := "/usr/games/steamcmd"
+	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("steamcmd not found at %s", steamcmdPath)
+	}
+
+	// Run in background
+	go func() {
+		cmd := exec.Command(steamcmdPath,
+			"+force_install_dir", base,
+			"+login", "anonymous",
+			"+app_info_update", "1",
+			"+app_update", "730", "validate",
+			"+quit")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Printf("[agent] validate_base error: %v\n", err)
+		} else {
+			fmt.Printf("[agent] validate_base completed\n")
+		}
+	}()
+
+	return map[string]string{"status": "validating", "message": "validation started in background"}, nil
 }
 
 func (h *Handler) listInstancePorts() ([]int, error) {
