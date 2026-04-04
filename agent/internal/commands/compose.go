@@ -54,6 +54,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir
       - %s/plugins:/custom/plugins:ro
       - %s/maps:/custom/maps:ro
       - %s/demos:/demos
+      - /etc/localtime:/etc/localtime:ro
     labels:
       - "rushborg.managed=true"
       - "rushborg.port=%d"
