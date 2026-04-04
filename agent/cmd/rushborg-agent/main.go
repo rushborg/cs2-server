@@ -81,6 +81,19 @@ func main() {
 		}
 	}()
 
+	// Auto-update checker — every 6 hours, check GitHub Release for newer version
+	go func() {
+		// Wait 1 minute after start before first check
+		time.Sleep(1 * time.Minute)
+		autoUpdate(cmdHandler)
+
+		ticker := time.NewTicker(6 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			autoUpdate(cmdHandler)
+		}
+	}()
+
 	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -111,6 +124,20 @@ func sendHeartbeat(client *connection.Client, cmdHandler *commands.Handler, data
 		Type:    "heartbeat",
 		Payload: payload,
 	})
+}
+
+func autoUpdate(cmdHandler *commands.Handler) {
+	log.Printf("[agent] checking for updates...")
+	result, err := cmdHandler.HandleCommand("update_agent", json.RawMessage(`{"download_url":""}`))
+	if err != nil {
+		// "checksum mismatch" or "download URL not allowed" means no update or error
+		// "updating" means update in progress
+		log.Printf("[agent] auto-update check: %v", err)
+		return
+	}
+	if r, ok := result.(map[string]string); ok {
+		log.Printf("[agent] auto-update: %s", r["status"])
+	}
 }
 
 func loadConfig(path string) (*Config, error) {

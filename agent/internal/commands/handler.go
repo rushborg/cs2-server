@@ -745,6 +745,18 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 		}
 	}
 
+	// Compare with current binary — skip if identical
+	newData, _ := os.ReadFile(tmpPath)
+	curData, _ := os.ReadFile(binPath)
+	if len(newData) > 0 && len(curData) > 0 {
+		newHash := fmt.Sprintf("%x", sha256Sum(newData))
+		curHash := fmt.Sprintf("%x", sha256Sum(curData))
+		if newHash == curHash {
+			os.Remove(tmpPath)
+			return map[string]string{"status": "already_latest", "message": "agent is already at latest version"}, nil
+		}
+	}
+
 	// Make executable
 	if err := os.Chmod(tmpPath, 0o755); err != nil {
 		return nil, fmt.Errorf("chmod failed: %w", err)
