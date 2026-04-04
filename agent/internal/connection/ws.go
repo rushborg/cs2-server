@@ -162,7 +162,7 @@ func (c *Client) runLoops() {
 				log.Printf("[agent] invalid message: %v", err)
 				continue
 			}
-			c.handleMessage(msg)
+			go c.handleMessage(msg) // handle concurrently so long commands don't block reads
 		}
 	}()
 
