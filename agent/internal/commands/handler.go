@@ -18,6 +18,15 @@ func sha256Sum(data []byte) [32]byte {
 	return sha256.Sum256(data)
 }
 
+// findBinary returns the full path of a binary using PATH lookup.
+func findBinary(name string) string {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return name // fallback to name, let sudo resolve
+	}
+	return path
+}
+
 type Handler struct {
 	DataDir      string // /opt/rushborg-srv
 	DockerImage  string // ghcr.io/rushborg/cs2-server:latest
@@ -754,19 +763,23 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 	}
 
 	// Replace binary — agent runs as rushborgsrv, binary owned by root.
-	// Use sudo cp to replace, then sudo systemctl to restart.
-	cpOut, cpErr := exec.Command("sudo", "cp", "-f", tmpPath, binPath).CombinedOutput()
+	// Use sudo with full paths (must match sudoers rules exactly).
+	cpPath := findBinary("cp")
+	chmodPath := findBinary("chmod")
+	systemctlPath := findBinary("systemctl")
+
+	cpOut, cpErr := exec.Command("sudo", cpPath, "-f", tmpPath, binPath).CombinedOutput()
 	os.Remove(tmpPath)
 	if cpErr != nil {
 		return nil, fmt.Errorf("replace binary failed: %w\noutput: %s", cpErr, string(cpOut))
 	}
-	exec.Command("sudo", "chmod", "+x", binPath).Run()
+	exec.Command("sudo", chmodPath, "+x", binPath).Run()
 
 	// Restart agent via systemctl (this kills the current process)
 	go func() {
 		// Small delay to allow response to be sent
 		exec.Command("sleep", "1").Run()
-		exec.Command("sudo", "systemctl", "restart", "rushborg-agent").Run()
+		exec.Command("sudo", systemctlPath, "restart", "rushborg-agent").Run()
 	}()
 
 	return map[string]string{"status": "updating", "message": "agent will restart in ~1s"}, nil
