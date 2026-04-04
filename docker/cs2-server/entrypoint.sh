@@ -27,7 +27,7 @@ if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
     # Retry up to 5 times (SteamCMD often needs multiple runs for large downloads)
     for attempt in 1 2 3 4 5; do
         log "SteamCMD attempt ${attempt}/5..."
-        gosu steam steamcmd \
+        gosu steam /usr/games/steamcmd \
             +force_install_dir "${CS2_DIR}" \
             +login anonymous \
             +app_info_update 1 \
