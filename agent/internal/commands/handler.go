@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gorcon/rcon"
 	a2s "github.com/rumblefrog/go-a2s"
@@ -348,6 +349,24 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docker compose up: %w\noutput: %s", err, out)
 	}
+
+	// Background: after CS2 installs, copy to cs2-base for future instances
+	go func() {
+		baseDir := filepath.Join(h.DataDir, "cs2-base")
+		cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
+		if _, err := os.Stat(cs2Binary); os.IsNotExist(err) {
+			// cs2-base is empty — wait for this instance to finish installing
+			instanceBinary := filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")
+			for i := 0; i < 360; i++ { // wait up to 1 hour
+				if _, err := os.Stat(instanceBinary); err == nil {
+					// CS2 installed — copy to base for future hardlink copies
+					exec.Command("cp", "-al", cs2DataDir+"/.", baseDir+"/").Run()
+					break
+				}
+				time.Sleep(10 * time.Second)
+			}
+		}
+	}()
 
 	return map[string]interface{}{
 		"port":     p.Port,
