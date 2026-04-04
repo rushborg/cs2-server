@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -131,11 +132,87 @@ type RCONPayload struct {
 // Max concurrent containers per host
 const maxContainers = 20
 
-func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (interface{}, error) {
+// downloadCS2ViaSteamCMD runs steamcmd to install/update CS2 (app 730) into baseDir.
+// Retries up to 5 times. Critically — checks SteamCMD output for failure markers
+// (e.g. "Error! App '730' state is 0x602") instead of only checking if the binary
+// exists, because a partial/corrupt install can leave the binary behind.
+func downloadCS2ViaSteamCMD(baseDir string) error {
+	steamcmdPath := "/usr/games/steamcmd"
+	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
+		return fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
+	}
+
+	cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
+	var lastErr error
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		fmt.Printf("[agent] SteamCMD CS2 install attempt %d/5 into %s\n", attempt, baseDir)
+		cmd := exec.Command(steamcmdPath,
+			"+force_install_dir", baseDir,
+			"+login", "anonymous",
+			"+app_info_update", "1",
+			"+app_update", "730", "validate",
+			"+quit",
+		)
+		// Tee output to our stdout AND capture it to detect error strings
+		var buf strings.Builder
+		cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+		cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+		runErr := cmd.Run()
+		output := buf.String()
+
+		// Detect SteamCMD "Error! App '730' state is 0x..." markers. Any such line means
+		// the install is broken even if the cs2 binary happens to exist from a prior run.
+		if strings.Contains(output, "Error! App '730'") || strings.Contains(output, "Error! App \"730\"") {
+			lastErr = fmt.Errorf("steamcmd reported app 730 error (see log above)")
+			fmt.Printf("[agent] SteamCMD attempt %d: detected app 730 error, will retry\n", attempt)
+		} else if runErr != nil {
+			lastErr = fmt.Errorf("steamcmd exit: %w", runErr)
+			fmt.Printf("[agent] SteamCMD attempt %d: exit error: %v\n", attempt, runErr)
+		} else if _, err := os.Stat(cs2Binary); err != nil {
+			lastErr = fmt.Errorf("cs2 binary missing after steamcmd: %w", err)
+			fmt.Printf("[agent] SteamCMD attempt %d: binary missing at %s\n", attempt, cs2Binary)
+		} else if strings.Contains(output, "Success! App '730' fully installed") ||
+			strings.Contains(output, "Success! App '730' already up to date") ||
+			strings.Contains(output, "fully installed.") {
+			fmt.Printf("[agent] SteamCMD attempt %d: success\n", attempt)
+			return nil
+		} else {
+			// Binary exists and no explicit error — accept with a warning
+			fmt.Printf("[agent] SteamCMD attempt %d: binary exists, no success marker — accepting\n", attempt)
+			return nil
+		}
+
+		if attempt < 5 {
+			fmt.Printf("[agent] retrying SteamCMD in 10s...\n")
+			time.Sleep(10 * time.Second)
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = fmt.Errorf("steamcmd failed after 5 attempts")
+	}
+	return fmt.Errorf("failed to install CS2 via steamcmd: %w", lastErr)
+}
+
+func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result interface{}, err error) {
 	// Allowlist check — reject unknown commands
 	if !allowedCommands[cmdType] {
 		return nil, fmt.Errorf("rejected unknown command: %s", cmdType)
 	}
+
+	fmt.Printf("[agent] ▶ command received: %s (%d bytes payload)\n", cmdType, len(payload))
+	startedAt := time.Now()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[agent] ✖ command %s PANIC after %s: %v\n", cmdType, time.Since(startedAt), r)
+			err = fmt.Errorf("panic in %s: %v", cmdType, r)
+		} else if err != nil {
+			fmt.Printf("[agent] ✖ command %s failed after %s: %v\n", cmdType, time.Since(startedAt), err)
+		} else {
+			fmt.Printf("[agent] ✓ command %s ok in %s\n", cmdType, time.Since(startedAt))
+		}
+	}()
 
 	switch cmdType {
 	case "deploy_server":
@@ -312,40 +389,9 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	// Ensure cs2-base has CS2 installed
 	cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
 	if _, err := os.Stat(cs2Binary); os.IsNotExist(err) {
-		// First deploy on this host — download CS2 into cs2-base via SteamCMD
-		log := func(msg string) {
-			fmt.Printf("[agent] %s\n", msg)
-		}
-		log("CS2 not found in cs2-base, downloading via SteamCMD...")
-
-		// Find steamcmd (installed by bootstrap script)
-		steamcmdPath := "/usr/games/steamcmd"
-		if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
-			return nil, fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
-		}
-
-		for attempt := 1; attempt <= 5; attempt++ {
-			log(fmt.Sprintf("SteamCMD attempt %d/5...", attempt))
-			cmd := exec.Command(steamcmdPath,
-				"+force_install_dir", baseDir,
-				"+login", "anonymous",
-				"+app_info_update", "1",
-				"+app_update", "730", "validate",
-				"+quit")
-			cmd.Stdout = os.Stdout
-			cmd.Stderr = os.Stderr
-			cmd.Run()
-
-			if _, err := os.Stat(cs2Binary); err == nil {
-				log("CS2 downloaded successfully")
-				break
-			}
-			log(fmt.Sprintf("Attempt %d incomplete, retrying in 10s...", attempt))
-			time.Sleep(10 * time.Second)
-		}
-
-		if _, err := os.Stat(cs2Binary); os.IsNotExist(err) {
-			return nil, fmt.Errorf("failed to download CS2 after 5 attempts")
+		fmt.Println("[agent] CS2 not found in cs2-base, downloading via SteamCMD...")
+		if err := downloadCS2ViaSteamCMD(baseDir); err != nil {
+			return nil, err
 		}
 	}
 
@@ -397,13 +443,19 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	}
 
 	// Pull latest image before starting
-	h.runCompose(dir, "pull")
+	fmt.Printf("[agent] deploy %d: docker compose pull\n", p.Port)
+	if pullOut, pullErr := h.runCompose(dir, "pull"); pullErr != nil {
+		// Non-fatal — image may already be present locally. Log and continue.
+		fmt.Printf("[agent] deploy %d: compose pull warning: %v\n%s\n", p.Port, pullErr, string(pullOut))
+	}
 
 	// docker compose up -d
+	fmt.Printf("[agent] deploy %d: docker compose up -d\n", p.Port)
 	out, err := h.runCompose(dir, "up", "-d")
 	if err != nil {
 		return nil, fmt.Errorf("docker compose up: %w\noutput: %s", err, out)
 	}
+	fmt.Printf("[agent] deploy %d: container started\n%s\n", p.Port, string(out))
 
 	return map[string]interface{}{
 		"port":     p.Port,
@@ -713,43 +765,14 @@ func (h *Handler) setupBase() (interface{}, error) {
 
 	cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
 
-	// Check if already installed
+	// Check if already installed (и не битый — downloadCS2ViaSteamCMD сам пропустит если up-to-date)
 	if _, err := os.Stat(cs2Binary); err == nil {
-		return map[string]string{"status": "already_installed", "path": base}, nil
+		fmt.Println("[agent] setup_base: cs2 binary already present, running SteamCMD validate to ensure integrity")
 	}
 
-	// Step 1: Download CS2 via SteamCMD (app 730 = CS2 dedicated server)
-	steamcmdPath := "/usr/games/steamcmd"
-	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
-	}
-
-	for attempt := 1; attempt <= 5; attempt++ {
-		fmt.Printf("[agent] SteamCMD setup_base attempt %d/5...\n", attempt)
-		cmd := exec.Command(steamcmdPath,
-			"+force_install_dir", base,
-			"+login", "anonymous",
-			"+app_info_update", "1",
-			"+app_update", "730", "validate",
-			"+quit",
-		)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Run()
-
-		if _, err := os.Stat(cs2Binary); err == nil {
-			fmt.Println("[agent] CS2 downloaded successfully via setup_base")
-			break
-		}
-		if attempt < 5 {
-			fmt.Printf("[agent] Attempt %d incomplete, retrying in 10s...\n", attempt)
-			time.Sleep(10 * time.Second)
-		}
-	}
-
-	// Verify CS2 was downloaded
-	if _, err := os.Stat(cs2Binary); err != nil {
-		return nil, fmt.Errorf("steamcmd failed to install CS2 after 5 attempts")
+	// Step 1: Download/validate CS2 via SteamCMD
+	if err := downloadCS2ViaSteamCMD(base); err != nil {
+		return nil, err
 	}
 
 	// Step 2: Run a temporary container to install plugins (MetaMod, CSSharp, MatchZy)
@@ -785,38 +808,8 @@ func (h *Handler) updateBase() (interface{}, error) {
 	}
 
 	// 2. Update CS2 via SteamCMD (validate re-downloads changed files)
-	steamcmdPath := "/usr/games/steamcmd"
-	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
-	}
-
-	for attempt := 1; attempt <= 5; attempt++ {
-		fmt.Printf("[agent] SteamCMD update_base attempt %d/5...\n", attempt)
-		cmd := exec.Command(steamcmdPath,
-			"+force_install_dir", base,
-			"+login", "anonymous",
-			"+app_info_update", "1",
-			"+app_update", "730", "validate",
-			"+quit",
-		)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Run()
-
-		cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
-		if _, err := os.Stat(cs2Binary); err == nil {
-			fmt.Println("[agent] CS2 updated successfully")
-			break
-		}
-		if attempt < 5 {
-			fmt.Printf("[agent] Attempt %d incomplete, retrying in 10s...\n", attempt)
-			time.Sleep(10 * time.Second)
-		}
-	}
-
-	cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
-	if _, err := os.Stat(cs2Binary); err != nil {
-		return nil, fmt.Errorf("steamcmd update failed — CS2 binary not found after 5 attempts")
+	if err := downloadCS2ViaSteamCMD(base); err != nil {
+		return nil, err
 	}
 
 	// 3. Remove plugin marker to force plugin reinstall
