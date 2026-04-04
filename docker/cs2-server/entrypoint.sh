@@ -23,6 +23,8 @@ chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
 
 # ─── Install CS2 if not present ─────────────────────────
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
+    # Clear stale steamapps manifests from failed installs
+    rm -rf "${CS2_DIR}/steamapps" 2>/dev/null || true
     log "CS2 not installed, running SteamCMD..."
     gosu steam /home/steam/steamcmd/steamcmd.sh \
         +force_install_dir "${CS2_DIR}" \
