@@ -27,7 +27,7 @@ if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
     # Retry up to 5 times (SteamCMD often needs multiple runs for large downloads)
     for attempt in 1 2 3 4 5; do
         log "SteamCMD attempt ${attempt}/5..."
-        gosu steam /home/steam/steamcmd/steamcmd.sh \
+        gosu steam steamcmd \
             +force_install_dir "${CS2_DIR}" \
             +login anonymous \
             +app_info_update 1 \
@@ -48,9 +48,14 @@ if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
 fi
 
 # ─── Fix steamclient.so ─────────────────────────────────
-if [ -f "/home/steam/steamcmd/linux64/steamclient.so" ] && [ -d "${CS2_DIR}/game/bin/linuxsteamrt64/" ]; then
-    cp -f /home/steam/steamcmd/linux64/steamclient.so "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" 2>/dev/null || true
-fi
+# Fix steamclient.so — copy from SteamCMD installation
+STEAMCLIENT_PATHS="/home/steam/.steam/steamcmd/linux64/steamclient.so /home/steam/.local/share/Steam/steamcmd/linux64/steamclient.so /usr/lib/games/linux64/steamclient.so"
+for sc in $STEAMCLIENT_PATHS; do
+    if [ -f "$sc" ] && [ -d "${CS2_DIR}/game/bin/linuxsteamrt64/" ]; then
+        cp -f "$sc" "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" 2>/dev/null || true
+        break
+    fi
+done
 
 # ─── Install plugins (once) ─────────────────────────────
 if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
