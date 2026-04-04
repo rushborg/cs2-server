@@ -29,6 +29,68 @@ fi
 # Fix ownership
 chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
 
+# ─── Steamworks SDK shim ────────────────────────────────
+# CS2 gameserver инициализирует Steamworks SDK и ищет steamclient.so в
+# /home/steam/.steam/sdk{32,64}/. Без этого сервер падает с:
+#   "Failed to load module '/home/steam/.steam/sdk64/steamclient.so'"
+# steamcmd при установке app 730 кладёт свою копию в <installdir>/linux64/,
+# поэтому делаем симлинки оттуда. Если файла нет (например, база приехала
+# без linux64/ директории) — подкачаем steamcmd и возьмём из него.
+setup_steamclient_shim() {
+    local sdk64=/home/steam/.steam/sdk64
+    local sdk32=/home/steam/.steam/sdk32
+    mkdir -p "$sdk64" "$sdk32"
+
+    local src64="" src32=""
+    for p in \
+        "${CS2_DIR}/linux64/steamclient.so" \
+        "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" \
+        "/usr/lib/steamcmd/linux64/steamclient.so"; do
+        if [ -f "$p" ]; then src64="$p"; break; fi
+    done
+    for p in \
+        "${CS2_DIR}/linux32/steamclient.so" \
+        "${CS2_DIR}/game/bin/linuxsteamrt32/steamclient.so" \
+        "/usr/lib/steamcmd/linux32/steamclient.so"; do
+        if [ -f "$p" ]; then src32="$p"; break; fi
+    done
+
+    if [ -z "$src64" ]; then
+        log "steamclient.so not found in CS2 install — fetching from Valve CDN"
+        mkdir -p /tmp/scshim
+        if curl -fsSL https://media.steampowered.com/client/steamcmd_linux.tar.gz -o /tmp/scshim/steamcmd.tgz; then
+            tar xzf /tmp/scshim/steamcmd.tgz -C /tmp/scshim 2>/dev/null || true
+            # steamcmd скачивает steamclient.so только после первого запуска
+            (cd /tmp/scshim && HOME=/tmp/scshim ./steamcmd.sh +login anonymous +quit 2>/dev/null || true)
+            for p in \
+                /tmp/scshim/linux64/steamclient.so \
+                /tmp/scshim/.steam/steamcmd/linux64/steamclient.so \
+                /tmp/scshim/.local/share/Steam/linux64/steamclient.so; do
+                if [ -f "$p" ]; then src64="$p"; break; fi
+            done
+            for p in \
+                /tmp/scshim/linux32/steamclient.so \
+                /tmp/scshim/.steam/steamcmd/linux32/steamclient.so \
+                /tmp/scshim/.local/share/Steam/linux32/steamclient.so; do
+                if [ -f "$p" ]; then src32="$p"; break; fi
+            done
+        fi
+    fi
+
+    if [ -n "$src64" ]; then
+        ln -sf "$src64" "$sdk64/steamclient.so"
+        log "Linked sdk64/steamclient.so -> $src64"
+    else
+        log "WARN: steamclient.so (64) not found — CS2 может не запуститься"
+    fi
+    if [ -n "$src32" ]; then
+        ln -sf "$src32" "$sdk32/steamclient.so"
+    fi
+
+    chown -R steam:steam /home/steam/.steam 2>/dev/null || true
+}
+setup_steamclient_shim
+
 # ─── Install plugins (once) ─────────────────────────────
 if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     log "Installing plugins..."
