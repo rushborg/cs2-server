@@ -641,10 +641,30 @@ func (h *Handler) getLogs(p GetLogsPayload) (interface{}, error) {
 		tail = 100
 	}
 	containerName := fmt.Sprintf("cs2-%d", p.Port)
+
+	// Check if container exists first
+	checkCmd := exec.Command("docker", "inspect", "--format", "{{.State.Status}}", containerName)
+	stateOut, checkErr := checkCmd.CombinedOutput()
+
+	if checkErr != nil {
+		// Container doesn't exist at all
+		return map[string]string{
+			"container": containerName,
+			"logs":      fmt.Sprintf("[agent] Контейнер %s не найден. Сервер ещё не был развёрнут или был удалён.", containerName),
+			"lines":     "0",
+		}, nil
+	}
+
+	state := strings.TrimSpace(string(stateOut))
+
 	cmd := exec.Command("docker", "logs", "--tail", fmt.Sprintf("%d", tail), containerName)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("docker logs: %w", err)
+		return map[string]string{
+			"container": containerName,
+			"logs":      fmt.Sprintf("[agent] Ошибка чтения логов (контейнер: %s): %v", state, err),
+			"lines":     "0",
+		}, nil
 	}
 	return map[string]string{
 		"container": containerName,
