@@ -193,11 +193,15 @@ export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"
 chown -R steam:steam /instance/data 2>/dev/null || true
 chown -R steam:steam /demos 2>/dev/null || true
 
+CS2_TICKRATE="${CS2_TICKRATE:-128}"
+log "Tickrate: ${CS2_TICKRATE}"
+
 exec gosu steam "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
     +ip 0.0.0.0 \
     -port "${CS2_PORT:-27015}" \
     +tv_port "${CS2_GOTV_PORT:-27020}" \
     -maxplayers "${CS2_MAXPLAYERS:-10}" \
+    -tickrate "${CS2_TICKRATE}" \
     +map "${CS2_MAP:-de_mirage}" \
     +game_type "${CS2_GAME_TYPE:-0}" +game_mode "${CS2_GAME_MODE:-1}" \
     +exec server.cfg \
