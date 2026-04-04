@@ -23,20 +23,26 @@ chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
 
 # ─── Install CS2 if not present ─────────────────────────
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-    # Clear stale steamapps manifests from failed installs
-    rm -rf "${CS2_DIR}/steamapps" 2>/dev/null || true
     log "CS2 not installed, running SteamCMD..."
-    gosu steam /home/steam/steamcmd/steamcmd.sh \
-        +force_install_dir "${CS2_DIR}" \
-        +login anonymous \
-        +app_update 730 validate \
-        +quit || true
-    if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
+    # Retry up to 5 times (SteamCMD often needs multiple runs for large downloads)
+    for attempt in 1 2 3 4 5; do
+        log "SteamCMD attempt ${attempt}/5..."
         gosu steam /home/steam/steamcmd/steamcmd.sh \
             +force_install_dir "${CS2_DIR}" \
             +login anonymous \
             +app_update 730 validate \
             +quit || true
+        if [ -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
+            log "CS2 installed successfully"
+            break
+        fi
+        log "SteamCMD attempt ${attempt} incomplete, retrying in 10s..."
+        sleep 10
+    done
+    if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
+        log "ERROR: CS2 installation failed after 5 attempts. Waiting 60s before container restart..."
+        sleep 60
+        exit 1
     fi
 fi
 
