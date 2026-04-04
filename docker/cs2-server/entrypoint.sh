@@ -16,16 +16,21 @@ METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux
 CSSHARP_URL="https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.364/counterstrikesharp-with-runtime-linux-1.0.364.zip"
 MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15.zip"
 
+# ─── Ensure correct ownership ────────────────────────────
+# cs2-data bind mount may be owned by host user (rushborgsrv).
+# SteamCMD runs as steam user — needs write access.
+chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
+
 # ─── Install CS2 if not present ─────────────────────────
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
     log "CS2 not installed, running SteamCMD..."
-    /home/steam/steamcmd/steamcmd.sh \
+    gosu steam /home/steam/steamcmd/steamcmd.sh \
         +force_install_dir "${CS2_DIR}" \
         +login anonymous \
         +app_update 730 validate \
         +quit || true
     if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-        /home/steam/steamcmd/steamcmd.sh \
+        gosu steam /home/steam/steamcmd/steamcmd.sh \
             +force_install_dir "${CS2_DIR}" \
             +login anonymous \
             +app_update 730 validate \
