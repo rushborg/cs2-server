@@ -132,6 +132,140 @@ type RCONPayload struct {
 // Max concurrent containers per host
 const maxContainers = 20
 
+// steamcmdProgressRe matches lines like:
+//
+//	Update state (0x61) downloading, progress: 98.77 (61582416353 / 62348865193)
+//
+// SteamCMD prints these roughly twice per second during download/verify.
+var steamcmdProgressRe = regexp.MustCompile(`Update state \(0x([0-9a-fA-F]+)\)[^,]*,\s*progress:\s*([0-9.]+)\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
+
+// steamcmdProgressWriter wraps a real writer and parses SteamCMD progress lines
+// on-the-fly. Every ~2 seconds (or every ≥1% progress jump) it prints a human
+// readable summary line with percent, downloaded/total bytes, speed and ETA —
+// so it shows up in the agent logs tab in the admin panel during CS2 downloads.
+type steamcmdProgressWriter struct {
+	inner      io.Writer
+	buf        []byte
+	lastLogAt  time.Time
+	lastBytes  int64
+	lastPct    float64
+	lastSpeedAt time.Time
+}
+
+func newSteamcmdProgressWriter(inner io.Writer) *steamcmdProgressWriter {
+	return &steamcmdProgressWriter{inner: inner, lastSpeedAt: time.Now()}
+}
+
+func humanBytes(n int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+	switch {
+	case n >= GB:
+		return fmt.Sprintf("%.2f GB", float64(n)/float64(GB))
+	case n >= MB:
+		return fmt.Sprintf("%.1f MB", float64(n)/float64(MB))
+	case n >= KB:
+		return fmt.Sprintf("%.1f KB", float64(n)/float64(KB))
+	}
+	return fmt.Sprintf("%d B", n)
+}
+
+func humanDuration(d time.Duration) string {
+	if d < 0 || d > 24*time.Hour {
+		return "—"
+	}
+	s := int(d.Seconds())
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	if s < 3600 {
+		return fmt.Sprintf("%dm%02ds", s/60, s%60)
+	}
+	return fmt.Sprintf("%dh%02dm", s/3600, (s%3600)/60)
+}
+
+func (w *steamcmdProgressWriter) Write(p []byte) (int, error) {
+	// Forward raw bytes unchanged to keep full steamcmd output available.
+	n, err := w.inner.Write(p)
+
+	// Parse newly received text line-by-line to find progress updates.
+	w.buf = append(w.buf, p...)
+	for {
+		idx := -1
+		for i, b := range w.buf {
+			if b == '\n' || b == '\r' {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			break
+		}
+		line := string(w.buf[:idx])
+		w.buf = w.buf[idx+1:]
+		w.handleLine(line)
+	}
+	return n, err
+}
+
+func (w *steamcmdProgressWriter) handleLine(line string) {
+	m := steamcmdProgressRe.FindStringSubmatch(line)
+	if m == nil {
+		return
+	}
+	state := m[1]
+	pct := 0.0
+	fmt.Sscanf(m[2], "%f", &pct)
+	var cur, total int64
+	fmt.Sscanf(m[3], "%d", &cur)
+	fmt.Sscanf(m[4], "%d", &total)
+
+	now := time.Now()
+	// Throttle: log at most every 2s, or if progress jumped ≥1%, or on state change markers.
+	if !w.lastLogAt.IsZero() && now.Sub(w.lastLogAt) < 2*time.Second && pct-w.lastPct < 1.0 {
+		return
+	}
+
+	var speedBps float64
+	if !w.lastSpeedAt.IsZero() && w.lastBytes > 0 && cur >= w.lastBytes {
+		elapsed := now.Sub(w.lastSpeedAt).Seconds()
+		if elapsed > 0 {
+			speedBps = float64(cur-w.lastBytes) / elapsed
+		}
+	}
+
+	remaining := total - cur
+	var eta time.Duration
+	if speedBps > 0 && remaining > 0 {
+		eta = time.Duration(float64(remaining)/speedBps) * time.Second
+	}
+
+	label := "downloading"
+	if strings.HasPrefix(state, "8") {
+		label = "verifying"
+	} else if state == "0" {
+		label = "idle"
+	}
+
+	speedStr := "—"
+	if speedBps > 0 {
+		speedStr = humanBytes(int64(speedBps)) + "/s"
+	}
+
+	fmt.Fprintf(os.Stdout,
+		"[agent] CS2 %s: %.2f%% (%s / %s) @ %s  ETA %s\n",
+		label, pct, humanBytes(cur), humanBytes(total), speedStr, humanDuration(eta),
+	)
+
+	w.lastLogAt = now
+	w.lastPct = pct
+	w.lastBytes = cur
+	w.lastSpeedAt = now
+}
+
 // downloadCS2ViaSteamCMD runs steamcmd to install/update CS2 (app 730) into baseDir.
 // Retries up to 5 times. Critically — checks SteamCMD output for failure markers
 // (e.g. "Error! App '730' state is 0x602") instead of only checking if the binary
@@ -154,9 +288,11 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 			"+app_update", "730", "validate",
 			"+quit",
 		)
-		// Tee output to our stdout AND capture it to detect error strings
+		// Tee output to our stdout (wrapped in a progress parser) AND capture it
+		// to detect error strings at the end of the run.
 		var buf strings.Builder
-		cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+		progress := newSteamcmdProgressWriter(os.Stdout)
+		cmd.Stdout = io.MultiWriter(progress, &buf)
 		cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 		runErr := cmd.Run()
 		output := buf.String()
