@@ -683,22 +683,59 @@ func (h *Handler) getStatus() (interface{}, error) {
 
 // ─── Shared CS2 Base ────────────────────────────────────
 // CS2 base (62GB) is shared across all instances via bind mount.
-// Entrypoint handles installation/plugins inside the container.
-// Agent only manages instance directories and Docker lifecycle.
+// Agent downloads CS2 via SteamCMD, then runs a temporary container
+// to install plugins (MetaMod, CSSharp, MatchZy).
 
-// setupBase ensures the cs2-base directory exists and triggers
-// a one-time CS2 install by starting a temporary container.
+// setupBase ensures CS2 is installed via SteamCMD and plugins are set up.
 func (h *Handler) setupBase() (interface{}, error) {
 	base := filepath.Join(h.DataDir, "cs2-base")
 	os.MkdirAll(base, 0o755)
 
+	cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
+
 	// Check if already installed
-	if _, err := os.Stat(filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")); err == nil {
+	if _, err := os.Stat(cs2Binary); err == nil {
 		return map[string]string{"status": "already_installed", "path": base}, nil
 	}
 
-	// Run the CS2 server image with just the base mount — entrypoint
-	// will install CS2 + plugins, then exit when CS2 starts (we kill it after install)
+	// Step 1: Download CS2 via SteamCMD (app 730 = CS2 dedicated server)
+	steamcmdPath := "/usr/games/steamcmd"
+	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
+	}
+
+	for attempt := 1; attempt <= 5; attempt++ {
+		fmt.Printf("[agent] SteamCMD setup_base attempt %d/5...\n", attempt)
+		cmd := exec.Command(steamcmdPath,
+			"+force_install_dir", base,
+			"+login", "anonymous",
+			"+app_info_update", "1",
+			"+app_update", "730", "validate",
+			"+quit",
+		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+
+		if _, err := os.Stat(cs2Binary); err == nil {
+			fmt.Println("[agent] CS2 downloaded successfully via setup_base")
+			break
+		}
+		if attempt < 5 {
+			fmt.Printf("[agent] Attempt %d incomplete, retrying in 10s...\n", attempt)
+			time.Sleep(10 * time.Second)
+		}
+	}
+
+	// Verify CS2 was downloaded
+	if _, err := os.Stat(cs2Binary); err != nil {
+		return nil, fmt.Errorf("steamcmd failed to install CS2 after 5 attempts")
+	}
+
+	// Step 2: Run a temporary container to install plugins (MetaMod, CSSharp, MatchZy)
+	// Remove stale setup container if exists
+	exec.Command("docker", "rm", "-f", "cs2-base-setup").Run()
+
 	cmd := exec.Command("docker", "run", "--rm",
 		"--name", "cs2-base-setup",
 		"-v", base+":/home/steam/cs2-dedicated",
@@ -710,16 +747,14 @@ func (h *Handler) setupBase() (interface{}, error) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		// Container exits when CS2 tries to bind port 0, that's expected
-		// Check if CS2 was actually installed
-		if _, statErr := os.Stat(filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")); statErr != nil {
-			return nil, fmt.Errorf("setup base failed: %w\noutput: %s", err, string(out))
-		}
+		// as long as plugins were installed before that
+		_ = out
 	}
 
 	return map[string]string{"status": "base_installed", "path": base}, nil
 }
 
-// updateBase stops all servers, updates CS2 base, recreates per-instance copies, restarts.
+// updateBase stops all servers, updates CS2 base via SteamCMD, reinstalls plugins, restarts.
 func (h *Handler) updateBase() (interface{}, error) {
 	instances, _ := h.listInstancePorts()
 	base := filepath.Join(h.DataDir, "cs2-base")
@@ -729,36 +764,74 @@ func (h *Handler) updateBase() (interface{}, error) {
 		h.stopServer(port)
 	}
 
-	// 2. Remove plugin marker to force plugin reinstall
-	os.Remove(filepath.Join(base, "game", "csgo", "addons", ".rushborg-plugins-installed"))
-
-	// 3. Update cs2-base (SteamCMD + plugins)
-	result, err := h.setupBase()
-	if err != nil {
-		return nil, err
+	// 2. Update CS2 via SteamCMD (validate re-downloads changed files)
+	steamcmdPath := "/usr/games/steamcmd"
+	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
+		return nil, fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
 	}
 
-	// 4. Recreate per-instance hardlink copies from updated base
+	for attempt := 1; attempt <= 5; attempt++ {
+		fmt.Printf("[agent] SteamCMD update_base attempt %d/5...\n", attempt)
+		cmd := exec.Command(steamcmdPath,
+			"+force_install_dir", base,
+			"+login", "anonymous",
+			"+app_info_update", "1",
+			"+app_update", "730", "validate",
+			"+quit",
+		)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Run()
+
+		cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
+		if _, err := os.Stat(cs2Binary); err == nil {
+			fmt.Println("[agent] CS2 updated successfully")
+			break
+		}
+		if attempt < 5 {
+			fmt.Printf("[agent] Attempt %d incomplete, retrying in 10s...\n", attempt)
+			time.Sleep(10 * time.Second)
+		}
+	}
+
+	cs2Binary := filepath.Join(base, "game", "bin", "linuxsteamrt64", "cs2")
+	if _, err := os.Stat(cs2Binary); err != nil {
+		return nil, fmt.Errorf("steamcmd update failed — CS2 binary not found after 5 attempts")
+	}
+
+	// 3. Remove plugin marker to force plugin reinstall
+	os.Remove(filepath.Join(base, "game", "csgo", "addons", ".rushborg-plugins-installed"))
+
+	// 4. Run temporary container to reinstall plugins
+	exec.Command("docker", "rm", "-f", "cs2-base-setup").Run()
+	cmd := exec.Command("docker", "run", "--rm",
+		"--name", "cs2-base-setup",
+		"-v", base+":/home/steam/cs2-dedicated",
+		"-e", "CS2_PORT=0",
+		"--security-opt", "seccomp=unconfined",
+		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
+		h.DockerImage,
+	)
+	cmd.CombinedOutput() // exits when CS2 tries to bind port 0
+
+	// 5. Recreate per-instance hardlink copies from updated base
 	for _, port := range instances {
 		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
-		// Remove old copy
 		os.RemoveAll(cs2Data)
-		// Create fresh hardlink copy
-		cmd := exec.Command("cp", "-al", base+"/.", cs2Data+"/")
-		if out, cpErr := cmd.CombinedOutput(); cpErr != nil {
-			// Fallback to regular copy
+		cpCmd := exec.Command("cp", "-al", base+"/.", cs2Data+"/")
+		if out, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
 			exec.Command("cp", "-a", base+"/.", cs2Data+"/").CombinedOutput()
 			_ = out
 		}
 	}
 
-	// 5. Restart all
+	// 6. Restart all
 	for _, port := range instances {
 		dir := h.instanceDir(port)
 		h.runCompose(dir, "up", "-d")
 	}
 
-	return result, nil
+	return map[string]string{"status": "updated", "path": base}, nil
 }
 
 // updateAgent downloads a new agent binary from GitHub Release and restarts.
