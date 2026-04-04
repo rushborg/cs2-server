@@ -280,20 +280,22 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	os.MkdirAll(baseDir, 0o755)
 	os.MkdirAll(filepath.Join(h.DataDir, "shared"), 0o755)
 
-	// Create per-instance CS2 copy via hardlinks (cp -al).
-	// Hardlinks share disk blocks — no extra space used until files are modified.
-	// Each container gets its own writable copy, no shared state conflicts.
+	// Create per-instance CS2 directory.
+	// If cs2-base has CS2 installed, hardlink copy (instant, no extra disk).
+	// If cs2-base is empty (first deploy), create empty dir — entrypoint will install CS2.
+	os.MkdirAll(cs2DataDir, 0o755)
 	if _, err := os.Stat(filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")); os.IsNotExist(err) {
 		if _, err := os.Stat(filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")); err == nil {
+			// Base exists — hardlink copy (shares disk blocks, instant)
 			cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
 			if out, err := cmd.CombinedOutput(); err != nil {
-				// Fallback to regular copy if hardlinks not supported
 				cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
 				if out2, err2 := cmd.CombinedOutput(); err2 != nil {
 					return nil, fmt.Errorf("copy cs2-base to instance: %w\noutput: %s %s", err2, out, out2)
 				}
 			}
 		}
+		// If base empty — cs2DataDir stays empty, entrypoint installs CS2
 	}
 
 	// Write server.cfg (with size limit and basic validation)
