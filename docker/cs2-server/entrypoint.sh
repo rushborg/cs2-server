@@ -23,6 +23,8 @@ chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
 
 # ─── Install CS2 if not present ─────────────────────────
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
+    # Pre-warm SteamCMD (self-update + cache)
+    gosu steam /usr/games/steamcmd +login anonymous +app_info_update 1 +quit 2>/dev/null || true
     log "CS2 not installed, running SteamCMD..."
     # Retry up to 5 times (SteamCMD often needs multiple runs for large downloads)
     for attempt in 1 2 3 4 5; do
