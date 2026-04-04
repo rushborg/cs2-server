@@ -16,48 +16,18 @@ METAMOD_URL="https://mms.alliedmods.net/mmsdrop/2.0/mmsource-2.0.0-git1390-linux
 CSSHARP_URL="https://github.com/roflmuffin/CounterStrikeSharp/releases/download/v1.0.364/counterstrikesharp-with-runtime-linux-1.0.364.zip"
 MATCHZY_URL="https://github.com/shobhit-pathak/MatchZy/releases/download/0.8.15/MatchZy-0.8.15.zip"
 
-# ─── Ensure correct ownership ────────────────────────────
-# cs2-data bind mount may be owned by host user (rushborgsrv).
-# SteamCMD runs as steam user — needs write access.
-chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
-
-# ─── Install CS2 if not present ─────────────────────────
+# ─── Verify CS2 is present ───────────────────────────────
+# CS2 is pre-installed by the agent into cs2-data via SteamCMD on the host.
+# Container only handles plugins, configs, and running CS2.
 if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-    log "CS2 not installed, running SteamCMD..."
-    # Retry up to 5 times (SteamCMD often needs multiple runs for large downloads)
-    # Run as root for full speed — chown to steam after install
-    for attempt in 1 2 3 4 5; do
-        log "SteamCMD attempt ${attempt}/5..."
-        /usr/games/steamcmd \
-            +force_install_dir "${CS2_DIR}" \
-            +login anonymous \
-            +app_info_update 1 \
-            +app_update 730 validate \
-            +quit || true
-        if [ -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-            log "CS2 installed successfully"
-            chown -R steam:steam "${CS2_DIR}"
-            break
-        fi
-        log "SteamCMD attempt ${attempt} incomplete, retrying in 10s..."
-        sleep 10
-    done
-    if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
-        log "ERROR: CS2 installation failed after 5 attempts. Waiting 60s before container restart..."
-        sleep 60
-        exit 1
-    fi
+    log "ERROR: CS2 not found. Agent must install CS2 into cs2-data before starting container."
+    log "Waiting 60s before restart..."
+    sleep 60
+    exit 1
 fi
 
-# ─── Fix steamclient.so ─────────────────────────────────
-# Fix steamclient.so — copy from SteamCMD installation
-STEAMCLIENT_PATHS="/home/steam/.steam/steamcmd/linux64/steamclient.so /home/steam/.local/share/Steam/steamcmd/linux64/steamclient.so /usr/lib/games/linux64/steamclient.so"
-for sc in $STEAMCLIENT_PATHS; do
-    if [ -f "$sc" ] && [ -d "${CS2_DIR}/game/bin/linuxsteamrt64/" ]; then
-        cp -f "$sc" "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" 2>/dev/null || true
-        break
-    fi
-done
+# Fix ownership
+chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
 
 # ─── Install plugins (once) ─────────────────────────────
 if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then

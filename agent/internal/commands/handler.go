@@ -289,22 +289,64 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	os.MkdirAll(baseDir, 0o755)
 	os.MkdirAll(filepath.Join(h.DataDir, "shared"), 0o755)
 
-	// Create per-instance CS2 directory.
-	// If cs2-base has CS2 installed, hardlink copy (instant, no extra disk).
-	// If cs2-base is empty (first deploy), create empty dir — entrypoint will install CS2.
-	os.MkdirAll(cs2DataDir, 0o755)
-	if _, err := os.Stat(filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")); os.IsNotExist(err) {
-		if _, err := os.Stat(filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")); err == nil {
-			// Base exists — hardlink copy (shares disk blocks, instant)
-			cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
-				if out2, err2 := cmd.CombinedOutput(); err2 != nil {
-					return nil, fmt.Errorf("copy cs2-base to instance: %w\noutput: %s %s", err2, out, out2)
-				}
+	// Ensure cs2-base has CS2 installed
+	cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
+	if _, err := os.Stat(cs2Binary); os.IsNotExist(err) {
+		// First deploy on this host — download CS2 into cs2-base via SteamCMD
+		log := func(msg string) {
+			fmt.Printf("[agent] %s\n", msg)
+		}
+		log("CS2 not found in cs2-base, downloading via SteamCMD...")
+
+		// Find steamcmd
+		steamcmdPath := "/usr/games/steamcmd"
+		if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
+			steamcmdPath = "/usr/bin/steamcmd"
+			if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
+				// Try to install
+				exec.Command("apt-get", "update", "-qq").Run()
+				exec.Command("dpkg", "--add-architecture", "i386").Run()
+				exec.Command("apt-get", "install", "-y", "-qq", "lib32gcc-s1", "steamcmd").Run()
+				steamcmdPath = "/usr/games/steamcmd"
 			}
 		}
-		// If base empty — cs2DataDir stays empty, entrypoint installs CS2
+
+		for attempt := 1; attempt <= 5; attempt++ {
+			log(fmt.Sprintf("SteamCMD attempt %d/5...", attempt))
+			cmd := exec.Command(steamcmdPath,
+				"+force_install_dir", baseDir,
+				"+login", "anonymous",
+				"+app_info_update", "1",
+				"+app_update", "730", "validate",
+				"+quit")
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			cmd.Run()
+
+			if _, err := os.Stat(cs2Binary); err == nil {
+				log("CS2 downloaded successfully")
+				break
+			}
+			log(fmt.Sprintf("Attempt %d incomplete, retrying in 10s...", attempt))
+			time.Sleep(10 * time.Second)
+		}
+
+		if _, err := os.Stat(cs2Binary); os.IsNotExist(err) {
+			return nil, fmt.Errorf("failed to download CS2 after 5 attempts")
+		}
+	}
+
+	// Hardlink copy cs2-base → instance cs2-data (instant, no extra disk)
+	os.MkdirAll(cs2DataDir, 0o755)
+	if _, err := os.Stat(filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")); os.IsNotExist(err) {
+		cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			// Fallback to regular copy
+			cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
+			if out2, err2 := cmd.CombinedOutput(); err2 != nil {
+				return nil, fmt.Errorf("copy cs2-base to instance: %w\noutput: %s %s", err2, out, out2)
+			}
+		}
 	}
 
 	// Write server.cfg (with size limit and basic validation)
@@ -349,24 +391,6 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	if err != nil {
 		return nil, fmt.Errorf("docker compose up: %w\noutput: %s", err, out)
 	}
-
-	// Background: after CS2 installs, copy to cs2-base for future instances
-	go func() {
-		baseDir := filepath.Join(h.DataDir, "cs2-base")
-		cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
-		if _, err := os.Stat(cs2Binary); os.IsNotExist(err) {
-			// cs2-base is empty — wait for this instance to finish installing
-			instanceBinary := filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")
-			for i := 0; i < 360; i++ { // wait up to 1 hour
-				if _, err := os.Stat(instanceBinary); err == nil {
-					// CS2 installed — copy to base for future hardlink copies
-					exec.Command("cp", "-al", cs2DataDir+"/.", baseDir+"/").Run()
-					break
-				}
-				time.Sleep(10 * time.Second)
-			}
-		}
-	}()
 
 	return map[string]interface{}{
 		"port":     p.Port,

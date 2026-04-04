@@ -1,25 +1,16 @@
 FROM ubuntu:22.04
 
-# Install dependencies + SteamCMD from apt (faster downloads than cm2network)
+# CS2 is pre-installed by the agent via SteamCMD on the host.
+# This image only needs runtime dependencies for CS2 + plugins.
 ENV DEBIAN_FRONTEND=noninteractive
-RUN dpkg --add-architecture i386 && \
-    apt-get update -qq && \
-    echo steam steam/question select "I AGREE" | debconf-set-selections && \
-    echo steam steam/license note '' | debconf-set-selections && \
+RUN apt-get update -qq && \
     apt-get install -y -qq \
-        lib32gcc-s1 steamcmd \
-        curl unzip libicu-dev gosu ca-certificates && \
+        lib32gcc-s1 curl unzip libicu-dev gosu ca-certificates locales && \
+    locale-gen en_US.UTF-8 && \
     rm -rf /var/lib/apt/lists/*
 
-# Create steam user (same as cm2network — uid 1000)
-RUN useradd -m -u 1000 -s /bin/bash steam && \
-    mkdir -p /home/steam/.steam /home/steam/.local/share/Steam && \
-    ln -sf /home/steam/.local/share/Steam /home/steam/.steam/root && \
-    ln -sf /home/steam/.local/share/Steam /home/steam/.steam/steam && \
-    chown -R steam:steam /home/steam && \
-    mkdir -p /root/.steam /root/Steam && \
-    ln -sf /root/Steam /root/.steam/root && \
-    ln -sf /root/Steam /root/.steam/steam
+# Create steam user (uid 1000)
+RUN useradd -m -u 1000 -s /bin/bash steam
 
 VOLUME ["/home/steam/cs2-dedicated", "/instance/config", "/instance/data", "/shared", "/custom/plugins", "/custom/maps", "/demos"]
 
