@@ -30,6 +30,7 @@ if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
         gosu steam /home/steam/steamcmd/steamcmd.sh \
             +force_install_dir "${CS2_DIR}" \
             +login anonymous \
+            +app_info_update 1 \
             +app_update 730 validate \
             +quit || true
         if [ -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
