@@ -340,6 +340,9 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		return nil, fmt.Errorf("writing docker-compose.yml: %w", err)
 	}
 
+	// Pull latest image before starting
+	h.runCompose(dir, "pull")
+
 	// docker compose up -d
 	out, err := h.runCompose(dir, "up", "-d")
 	if err != nil {
