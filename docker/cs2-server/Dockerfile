@@ -13,11 +13,13 @@ RUN dpkg --add-architecture i386 && \
 
 # Create steam user (same as cm2network — uid 1000)
 RUN useradd -m -u 1000 -s /bin/bash steam && \
-    mkdir -p /home/steam/.steam && \
+    mkdir -p /home/steam/.steam /home/steam/.local/share/Steam && \
     ln -sf /home/steam/.local/share/Steam /home/steam/.steam/root && \
     ln -sf /home/steam/.local/share/Steam /home/steam/.steam/steam && \
-    mkdir -p /home/steam/.local/share/Steam && \
-    chown -R steam:steam /home/steam
+    chown -R steam:steam /home/steam && \
+    mkdir -p /root/.steam /root/Steam && \
+    ln -sf /root/Steam /root/.steam/root && \
+    ln -sf /root/Steam /root/.steam/steam
 
 VOLUME ["/home/steam/cs2-dedicated", "/instance/config", "/instance/data", "/shared", "/custom/plugins", "/custom/maps", "/demos"]
 
