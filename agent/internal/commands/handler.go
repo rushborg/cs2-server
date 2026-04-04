@@ -31,7 +31,6 @@ type Handler struct {
 	DataDir      string // /opt/rushborg-srv
 	DockerImage  string // ghcr.io/rushborg/cs2-server:latest
 	PlatformURL  string // https://rush-b.org — for validating download URLs
-	hostIP       string // cached external IP for connecting to game servers
 }
 
 type DeployPayload struct {
@@ -523,24 +522,10 @@ func (h *Handler) execRCON(p RCONPayload) (interface{}, error) {
 	return map[string]string{"output": response}, nil
 }
 
-// resolveAddr returns the best address to connect to a local game server.
-// CS2 with +ip 0.0.0.0 listens on all interfaces. Try localhost first,
-// fallback to external IP detected via hostname -I.
+// resolveAddr returns address to connect to a local game server.
+// CS2 with +ip 0.0.0.0 listens on all interfaces including localhost.
 func (h *Handler) resolveAddr(port int) string {
-	// Try to detect external IP (cached after first call)
-	if h.hostIP == "" {
-		out, err := exec.Command("hostname", "-I").Output()
-		if err == nil {
-			ips := strings.Fields(strings.TrimSpace(string(out)))
-			if len(ips) > 0 {
-				h.hostIP = ips[0]
-			}
-		}
-		if h.hostIP == "" {
-			h.hostIP = "127.0.0.1"
-		}
-	}
-	return fmt.Sprintf("%s:%d", h.hostIP, port)
+	return fmt.Sprintf("127.0.0.1:%d", port)
 }
 
 func (h *Handler) queryServer(port int) (interface{}, error) {

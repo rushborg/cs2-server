@@ -138,6 +138,7 @@ fi
 export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"
 
 chown -R steam:steam /instance/data 2>/dev/null || true
+chown -R steam:steam /demos 2>/dev/null || true
 
 exec gosu steam "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
     +ip 0.0.0.0 \
