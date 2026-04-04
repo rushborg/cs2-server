@@ -298,17 +298,10 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		}
 		log("CS2 not found in cs2-base, downloading via SteamCMD...")
 
-		// Find steamcmd
+		// Find steamcmd (installed by bootstrap script)
 		steamcmdPath := "/usr/games/steamcmd"
 		if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
-			steamcmdPath = "/usr/bin/steamcmd"
-			if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
-				// Try to install
-				exec.Command("apt-get", "update", "-qq").Run()
-				exec.Command("dpkg", "--add-architecture", "i386").Run()
-				exec.Command("apt-get", "install", "-y", "-qq", "lib32gcc-s1", "steamcmd").Run()
-				steamcmdPath = "/usr/games/steamcmd"
-			}
+			return nil, fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
 		}
 
 		for attempt := 1; attempt <= 5; attempt++ {
