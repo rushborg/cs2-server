@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorcon/rcon"
@@ -139,6 +140,56 @@ const maxContainers = 20
 // SteamCMD prints these roughly twice per second during download/verify.
 var steamcmdProgressRe = regexp.MustCompile(`Update state \(0x([0-9a-fA-F]+)\)[^,]*,\s*progress:\s*([0-9.]+)\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
 
+// SteamCMDProgress is a snapshot of current CS2 download progress. It is
+// populated by steamcmdProgressWriter while downloadCS2ViaSteamCMD is running
+// and read by get_base_status so the admin panel can render a live progress
+// bar without tailing the log.
+type SteamCMDProgress struct {
+	Active    bool      `json:"active"`
+	State     string    `json:"state"`      // "downloading" | "verifying" | "idle"
+	StateCode string    `json:"state_code"` // raw hex like "61", "81"
+	Percent   float64   `json:"percent"`
+	Current   int64     `json:"current_bytes"`
+	Total     int64     `json:"total_bytes"`
+	SpeedBps  float64   `json:"speed_bps"`
+	EtaSec    int64     `json:"eta_seconds"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+var (
+	steamcmdProgressMu sync.Mutex
+	steamcmdProgressCur *SteamCMDProgress
+)
+
+func setSteamcmdProgress(p SteamCMDProgress) {
+	steamcmdProgressMu.Lock()
+	cp := p
+	steamcmdProgressCur = &cp
+	steamcmdProgressMu.Unlock()
+}
+
+// getSteamcmdProgress returns a copy of the latest progress snapshot (or nil
+// if there has been none). Marks Active=false if no update was received in the
+// last 20s — useful to stop the UI "stuck on 42%" if steamcmd died silently.
+func getSteamcmdProgress() *SteamCMDProgress {
+	steamcmdProgressMu.Lock()
+	defer steamcmdProgressMu.Unlock()
+	if steamcmdProgressCur == nil {
+		return nil
+	}
+	cp := *steamcmdProgressCur
+	if time.Since(cp.UpdatedAt) > 20*time.Second {
+		cp.Active = false
+	}
+	return &cp
+}
+
+func clearSteamcmdProgress() {
+	steamcmdProgressMu.Lock()
+	steamcmdProgressCur = nil
+	steamcmdProgressMu.Unlock()
+}
+
 // steamcmdProgressWriter wraps a real writer and parses SteamCMD progress lines
 // on-the-fly. Every ~2 seconds (or every ≥1% progress jump) it prints a human
 // readable summary line with percent, downloaded/total bytes, speed and ETA —
@@ -224,40 +275,52 @@ func (w *steamcmdProgressWriter) handleLine(line string) {
 	fmt.Sscanf(m[4], "%d", &total)
 
 	now := time.Now()
-	// Throttle: log at most every 2s, or if progress jumped ≥1%, or on state change markers.
-	if !w.lastLogAt.IsZero() && now.Sub(w.lastLogAt) < 2*time.Second && pct-w.lastPct < 1.0 {
-		return
-	}
 
-	var speedBps float64
+	// Always refresh the shared snapshot so the admin panel sees live values
+	// even between log flush intervals. Speed uses a short moving delta.
+	var snapSpeed float64
 	if !w.lastSpeedAt.IsZero() && w.lastBytes > 0 && cur >= w.lastBytes {
-		elapsed := now.Sub(w.lastSpeedAt).Seconds()
-		if elapsed > 0 {
-			speedBps = float64(cur-w.lastBytes) / elapsed
+		if elapsed := now.Sub(w.lastSpeedAt).Seconds(); elapsed > 0 {
+			snapSpeed = float64(cur-w.lastBytes) / elapsed
 		}
 	}
-
-	remaining := total - cur
-	var eta time.Duration
-	if speedBps > 0 && remaining > 0 {
-		eta = time.Duration(float64(remaining)/speedBps) * time.Second
-	}
-
 	label := "downloading"
 	if strings.HasPrefix(state, "8") {
 		label = "verifying"
 	} else if state == "0" {
 		label = "idle"
 	}
+	var snapEta time.Duration
+	if snapSpeed > 0 && total-cur > 0 {
+		snapEta = time.Duration(float64(total-cur)/snapSpeed) * time.Second
+	}
+	setSteamcmdProgress(SteamCMDProgress{
+		Active:    true,
+		State:     label,
+		StateCode: state,
+		Percent:   pct,
+		Current:   cur,
+		Total:     total,
+		SpeedBps:  snapSpeed,
+		EtaSec:    int64(snapEta.Seconds()),
+		UpdatedAt: now,
+	})
+
+	// Throttle stdout log: at most every 2s, or on ≥1% jump.
+	if !w.lastLogAt.IsZero() && now.Sub(w.lastLogAt) < 2*time.Second && pct-w.lastPct < 1.0 {
+		w.lastBytes = cur
+		w.lastSpeedAt = now
+		return
+	}
 
 	speedStr := "—"
-	if speedBps > 0 {
-		speedStr = humanBytes(int64(speedBps)) + "/s"
+	if snapSpeed > 0 {
+		speedStr = humanBytes(int64(snapSpeed)) + "/s"
 	}
 
 	fmt.Fprintf(os.Stdout,
 		"[agent] CS2 %s: %.2f%% (%s / %s) @ %s  ETA %s\n",
-		label, pct, humanBytes(cur), humanBytes(total), speedStr, humanDuration(eta),
+		label, pct, humanBytes(cur), humanBytes(total), speedStr, humanDuration(snapEta),
 	)
 
 	w.lastLogAt = now
@@ -275,6 +338,10 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
 		return fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
 	}
+
+	// Reset and clear shared progress on exit so the admin UI stops showing it.
+	setSteamcmdProgress(SteamCMDProgress{Active: true, State: "starting", UpdatedAt: time.Now()})
+	defer clearSteamcmdProgress()
 
 	cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
 	var lastErr error
@@ -1096,6 +1163,30 @@ func (h *Handler) getBaseStatus() (interface{}, error) {
 				}
 			}
 		}
+	}
+
+	// Attach live SteamCMD download progress if a download is in-flight.
+	if prog := getSteamcmdProgress(); prog != nil {
+		eta := time.Duration(prog.EtaSec) * time.Second
+		download := map[string]interface{}{
+			"active":        prog.Active,
+			"state":         prog.State,
+			"state_code":    prog.StateCode,
+			"percent":       prog.Percent,
+			"current_bytes": prog.Current,
+			"total_bytes":   prog.Total,
+			"current_human": humanBytes(prog.Current),
+			"total_human":   humanBytes(prog.Total),
+			"speed_bps":     prog.SpeedBps,
+			"speed_human":   "—",
+			"eta_seconds":   prog.EtaSec,
+			"eta_human":     humanDuration(eta),
+			"updated_at":    prog.UpdatedAt.Format(time.RFC3339),
+		}
+		if prog.SpeedBps > 0 {
+			download["speed_human"] = humanBytes(int64(prog.SpeedBps)) + "/s"
+		}
+		result["download"] = download
 	}
 
 	return result, nil
