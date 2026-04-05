@@ -781,8 +781,17 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	}
 	// Belt-and-suspenders: force-remove the named container if it still
 	// exists (compose file might be missing/broken but container alive).
+	// Log failures so мы можем отличить "контейнера не было" от реального
+	// "ошибка удаления" (permission denied на volume, daemon занят и т.п.) —
+	// без этого redeploy молча оставлял старый контейнер с закешированным
+	// matchzy.cfg в памяти, и изменения cvar'ов не подтягивались.
 	containerName := fmt.Sprintf("cs2-%d", p.Port)
-	exec.Command("docker", "rm", "-f", containerName).Run()
+	if rmOut, rmErr := exec.Command("docker", "rm", "-f", containerName).CombinedOutput(); rmErr != nil {
+		out := strings.TrimSpace(string(rmOut))
+		if out != "" && !strings.Contains(out, "No such container") {
+			fmt.Printf("[agent] deploy %d: docker rm -f %s warning: %v\n%s\n", p.Port, containerName, rmErr, out)
+		}
+	}
 
 	// Hardlink copy cs2-base → instance cs2-data (instant, no extra disk).
 	// Uses a completion marker + critical-file verification so that a
@@ -845,9 +854,15 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		fmt.Printf("[agent] deploy %d: compose pull warning: %v\n%s\n", p.Port, pullErr, string(pullOut))
 	}
 
-	// docker compose up -d
-	fmt.Printf("[agent] deploy %d: docker compose up -d\n", p.Port)
-	out, err := h.runCompose(dir, "up", "-d")
+	// docker compose up -d --force-recreate
+	// --force-recreate гарантирует, что при redeploy контейнер реально
+	// пересоздаётся и entrypoint повторно копирует /instance/config/*.cfg
+	// (включая обновлённый matchzy.cfg) в игровой cfg-каталог и выполняет
+	// exec matchzy.cfg. Без этого флага, если compose-файл не изменился,
+	// compose оставляет уже запущенный контейнер как есть, и новые cvar'ы
+	// из matchzy.cfg в память CS2 не подтягиваются.
+	fmt.Printf("[agent] deploy %d: docker compose up -d --force-recreate\n", p.Port)
+	out, err := h.runCompose(dir, "up", "-d", "--force-recreate")
 	if err != nil {
 		return nil, fmt.Errorf("docker compose up: %w\noutput: %s", err, out)
 	}
