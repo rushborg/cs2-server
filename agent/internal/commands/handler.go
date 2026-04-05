@@ -622,7 +622,7 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	// detected and the instance dir is rebuilt from scratch. Without this,
 	// a half-copied instance with just the cs2 binary could slip past and
 	// the container would crash-loop with "Can't find csgo/gameinfo.gi".
-	if err := syncCs2DataFromBase(cs2DataDir, baseDir); err != nil {
+	if err := syncCs2DataFromBase(cs2DataDir, baseDir, h.DockerImage); err != nil {
 		return nil, fmt.Errorf("sync cs2-base to instance: %w", err)
 	}
 
@@ -1051,7 +1051,7 @@ func (h *Handler) updateBase() (interface{}, error) {
 	for _, port := range instances {
 		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
 		os.Remove(filepath.Join(cs2Data, ".rushborg-cs2-ready"))
-		if err := syncCs2DataFromBase(cs2Data, base); err != nil {
+		if err := syncCs2DataFromBase(cs2Data, base, h.DockerImage); err != nil {
 			fmt.Printf("[agent] force-update: sync instance %d failed: %v\n", port, err)
 		}
 	}
@@ -1295,7 +1295,14 @@ const cs2ReadyMarker = ".rushborg-cs2-ready"
 // is missing or any critical file is missing, the instance dir is wiped and
 // rebuilt from scratch. Copy is hardlinked (cp -al) when possible, with a
 // full deep-copy fallback for cross-filesystem cases.
-func syncCs2DataFromBase(cs2DataDir, baseDir string) error {
+//
+// dockerImage is used as a last-resort privileged cleanup image when the
+// agent's own user can't remove the directory (e.g. because the cs2
+// container's entrypoint chown'd the tree to uid=1000/steam and the agent
+// runs as a different uid). The agent is in the docker group, so spawning
+// a throwaway container gives us root-on-host privileges for this one
+// operation without touching sudoers.
+func syncCs2DataFromBase(cs2DataDir, baseDir, dockerImage string) error {
 	if err := os.MkdirAll(cs2DataDir, 0o755); err != nil {
 		return fmt.Errorf("mkdir %s: %w", cs2DataDir, err)
 	}
@@ -1312,15 +1319,8 @@ func syncCs2DataFromBase(cs2DataDir, baseDir string) error {
 	// are already present — hardlinks can't overwrite regular files in all
 	// cp versions, and leftover half-copied files waste inodes.
 	fmt.Printf("[agent] cs2-data %s is incomplete, rebuilding from base\n", cs2DataDir)
-	if err := os.RemoveAll(cs2DataDir); err != nil {
-		// Fallback: some files may have restrictive perms (e.g. runtime
-		// files written by the cs2 container). Force write perms on the
-		// whole tree and retry via `rm -rf`.
-		fmt.Printf("[agent] RemoveAll failed (%v), retrying with chmod + rm -rf\n", err)
-		exec.Command("chmod", "-R", "u+rwX", cs2DataDir).Run()
-		if out, rerr := exec.Command("rm", "-rf", cs2DataDir).CombinedOutput(); rerr != nil {
-			return fmt.Errorf("cleanup stale cs2-data: %w (rm -rf fallback also failed: %v, output: %s)", err, rerr, string(out))
-		}
+	if err := removeCs2DataTree(cs2DataDir, dockerImage); err != nil {
+		return fmt.Errorf("cleanup stale cs2-data: %w", err)
 	}
 	if err := os.MkdirAll(cs2DataDir, 0o755); err != nil {
 		return fmt.Errorf("recreate cs2-data: %w", err)
@@ -1354,6 +1354,75 @@ func syncCs2DataFromBase(cs2DataDir, baseDir string) error {
 	if err := os.WriteFile(markerPath, []byte(""), 0o644); err != nil {
 		return fmt.Errorf("write ready marker: %w", err)
 	}
+	return nil
+}
+
+// removeCs2DataTree wipes cs2DataDir, escalating through progressively
+// more privileged strategies until something works.
+//
+//  1. os.RemoveAll — fast path, works when the agent owns everything.
+//  2. chmod -R u+rwX && rm -rf — handles the case where the agent owns
+//     files but has left them with restricted perms.
+//  3. docker run --rm --user 0:0 -v parent:/t image sh -c 'rm -rf /t/<name>'
+//     — last resort. The cs2-server container's entrypoint does
+//     `chown -R steam:steam` on the bind-mounted cs2-data, giving every
+//     file uid=1000. If the agent's `rushborgsrv` user has a different
+//     uid (common on hosts that had an `ubuntu` user first), plain `rm`
+//     will fail with EPERM/EACCES even recursively. Docker is always
+//     accessible to the agent (it's in the docker group) and runs as
+//     root on the host, which gives us a privilege-escalation path that
+//     doesn't require sudoers changes.
+func removeCs2DataTree(cs2DataDir, dockerImage string) error {
+	// Fast path.
+	if err := os.RemoveAll(cs2DataDir); err == nil {
+		return nil
+	} else {
+		fmt.Printf("[agent] RemoveAll failed (%v), trying chmod + rm -rf\n", err)
+	}
+
+	// chmod + shell rm.
+	exec.Command("chmod", "-R", "u+rwX", cs2DataDir).Run()
+	if out, err := exec.Command("rm", "-rf", cs2DataDir).CombinedOutput(); err == nil {
+		return nil
+	} else {
+		fmt.Printf("[agent] shell rm -rf failed (%v, %s), trying docker-as-root cleanup\n", err, string(out))
+	}
+
+	// Docker-as-root last resort.
+	if dockerImage == "" {
+		return fmt.Errorf("cannot remove %s and no docker image provided for privileged cleanup", cs2DataDir)
+	}
+	parent := filepath.Dir(cs2DataDir)
+	base := filepath.Base(cs2DataDir)
+	if parent == "" || parent == "/" || base == "" || base == "/" {
+		return fmt.Errorf("refusing privileged cleanup on unsafe path %s", cs2DataDir)
+	}
+	// Sanity: base must not contain shell metacharacters.
+	if strings.ContainsAny(base, "` $();|&<>\"'\\\n\r") {
+		return fmt.Errorf("refusing privileged cleanup on unsafe name %q", base)
+	}
+	dockerCmd := exec.Command("docker", "run", "--rm",
+		"--user", "0:0",
+		"--entrypoint", "sh",
+		"-v", parent+":/target",
+		dockerImage,
+		"-c", fmt.Sprintf("rm -rf -- /target/%s && mkdir -p /target/%s && chmod 0755 /target/%s", base, base, base),
+	)
+	if out, err := dockerCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker-as-root cleanup failed: %w\noutput: %s", err, string(out))
+	}
+	// Ensure the empty dir we just created is owned by the agent user,
+	// not root. Best-effort: use docker again to chown to current uid.
+	uid := os.Getuid()
+	gid := os.Getgid()
+	chownCmd := exec.Command("docker", "run", "--rm",
+		"--user", "0:0",
+		"--entrypoint", "sh",
+		"-v", parent+":/target",
+		dockerImage,
+		"-c", fmt.Sprintf("chown %d:%d /target/%s", uid, gid, base),
+	)
+	chownCmd.Run() // best-effort
 	return nil
 }
 
