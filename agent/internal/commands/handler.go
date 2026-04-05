@@ -598,6 +598,24 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		}
 	}
 
+	// If a previous deploy left a crash-looping container on this port,
+	// it is still bind-mounting cs2-data and holds file handles inside it
+	// (and may have written new files owned by the container's steam uid).
+	// Any attempt to wipe/refresh cs2-data while that container is alive
+	// results in `unlinkat ... permission denied` on files inside the mount.
+	// Tear down any existing container for this port before touching
+	// cs2-data. Best-effort: ignore errors if there's nothing to stop.
+	composePath := filepath.Join(dir, "docker-compose.yml")
+	if _, err := os.Stat(composePath); err == nil {
+		if out, derr := h.runCompose(dir, "down", "--remove-orphans", "--timeout", "10"); derr != nil {
+			fmt.Printf("[agent] deploy %d: pre-deploy compose down warning: %v\n%s\n", p.Port, derr, out)
+		}
+	}
+	// Belt-and-suspenders: force-remove the named container if it still
+	// exists (compose file might be missing/broken but container alive).
+	containerName := fmt.Sprintf("cs2-%d", p.Port)
+	exec.Command("docker", "rm", "-f", containerName).Run()
+
 	// Hardlink copy cs2-base → instance cs2-data (instant, no extra disk).
 	// Uses a completion marker + critical-file verification so that a
 	// previously interrupted copy (OOM, EIO, agent restart, SIGKILL) is
@@ -1295,7 +1313,14 @@ func syncCs2DataFromBase(cs2DataDir, baseDir string) error {
 	// cp versions, and leftover half-copied files waste inodes.
 	fmt.Printf("[agent] cs2-data %s is incomplete, rebuilding from base\n", cs2DataDir)
 	if err := os.RemoveAll(cs2DataDir); err != nil {
-		return fmt.Errorf("cleanup stale cs2-data: %w", err)
+		// Fallback: some files may have restrictive perms (e.g. runtime
+		// files written by the cs2 container). Force write perms on the
+		// whole tree and retry via `rm -rf`.
+		fmt.Printf("[agent] RemoveAll failed (%v), retrying with chmod + rm -rf\n", err)
+		exec.Command("chmod", "-R", "u+rwX", cs2DataDir).Run()
+		if out, rerr := exec.Command("rm", "-rf", cs2DataDir).CombinedOutput(); rerr != nil {
+			return fmt.Errorf("cleanup stale cs2-data: %w (rm -rf fallback also failed: %v, output: %s)", err, rerr, string(out))
+		}
 	}
 	if err := os.MkdirAll(cs2DataDir, 0o755); err != nil {
 		return fmt.Errorf("recreate cs2-data: %w", err)
