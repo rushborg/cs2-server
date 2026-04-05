@@ -48,11 +48,18 @@ fi
 
 # ─── Steamworks SDK shim ────────────────────────────────
 # CS2 gameserver инициализирует Steamworks SDK и ищет steamclient.so в
-# /home/steam/.steam/sdk{32,64}/. Без этого сервер падает с:
-#   "Failed to load module '/home/steam/.steam/sdk64/steamclient.so'"
-# steamcmd при установке app 730 кладёт свою копию в <installdir>/linux64/,
-# поэтому делаем симлинки оттуда. Если файла нет (например, база приехала
-# без linux64/ директории) — подкачаем steamcmd и возьмём из него.
+# /home/steam/.steam/sdk{32,64}/. Без совместимой версии сервер запускается,
+# даже логинится с GSLT, но SteamNetworkingSockets падают с:
+#   [S_API FAIL] Tried to access Steam interface SteamUtils010 before ...
+# из-за чего клиентские коннекты молча отбрасываются (A2S при этом отвечает).
+#
+# Источник правды — steamclient.so, который host'овый steamcmd кладёт рядом с
+# установкой CS2 через stageSteamclientSO() в agent/internal/commands. Он
+# копируется как РЕАЛЬНЫЙ файл в <CS2_DIR>/steamclient/linux{64,32}/ и ровно
+# соответствует версии Source 2 runtime, поставленной в том же проходе
+# steamcmd. Раньше тут был fallback, который качал свежий steamcmd с CDN и
+# брал оттуда steamclient.so — это приводило к несовместимости API и тихо
+# ломало клиентские коннекты. Fallback удалён намеренно.
 setup_steamclient_shim() {
     local sdk64=/home/steam/.steam/sdk64
     local sdk32=/home/steam/.steam/sdk32
@@ -60,45 +67,25 @@ setup_steamclient_shim() {
 
     local src64="" src32=""
     for p in \
+        "${CS2_DIR}/steamclient/linux64/steamclient.so" \
         "${CS2_DIR}/linux64/steamclient.so" \
-        "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so" \
-        "/usr/lib/steamcmd/linux64/steamclient.so"; do
+        "${CS2_DIR}/game/bin/linuxsteamrt64/steamclient.so"; do
         if [ -f "$p" ]; then src64="$p"; break; fi
     done
     for p in \
+        "${CS2_DIR}/steamclient/linux32/steamclient.so" \
         "${CS2_DIR}/linux32/steamclient.so" \
-        "${CS2_DIR}/game/bin/linuxsteamrt32/steamclient.so" \
-        "/usr/lib/steamcmd/linux32/steamclient.so"; do
+        "${CS2_DIR}/game/bin/linuxsteamrt32/steamclient.so"; do
         if [ -f "$p" ]; then src32="$p"; break; fi
     done
-
-    if [ -z "$src64" ]; then
-        log "steamclient.so not found in CS2 install — fetching from Valve CDN"
-        mkdir -p /tmp/scshim
-        if curl -fsSL https://media.steampowered.com/client/steamcmd_linux.tar.gz -o /tmp/scshim/steamcmd.tgz; then
-            tar xzf /tmp/scshim/steamcmd.tgz -C /tmp/scshim 2>/dev/null || true
-            # steamcmd скачивает steamclient.so только после первого запуска
-            (cd /tmp/scshim && HOME=/tmp/scshim ./steamcmd.sh +login anonymous +quit 2>/dev/null || true)
-            for p in \
-                /tmp/scshim/linux64/steamclient.so \
-                /tmp/scshim/.steam/steamcmd/linux64/steamclient.so \
-                /tmp/scshim/.local/share/Steam/linux64/steamclient.so; do
-                if [ -f "$p" ]; then src64="$p"; break; fi
-            done
-            for p in \
-                /tmp/scshim/linux32/steamclient.so \
-                /tmp/scshim/.steam/steamcmd/linux32/steamclient.so \
-                /tmp/scshim/.local/share/Steam/linux32/steamclient.so; do
-                if [ -f "$p" ]; then src32="$p"; break; fi
-            done
-        fi
-    fi
 
     if [ -n "$src64" ]; then
         ln -sf "$src64" "$sdk64/steamclient.so"
         log "Linked sdk64/steamclient.so -> $src64"
     else
-        log "WARN: steamclient.so (64) not found — CS2 может не запуститься"
+        log "FATAL: steamclient.so (64) not found under ${CS2_DIR}/steamclient/linux64/."
+        log "       The agent must stage it via stageSteamclientSO() after steamcmd install."
+        log "       Re-deploy the server from the admin UI so the agent copies it in."
     fi
     if [ -n "$src32" ]; then
         ln -sf "$src32" "$sdk32/steamclient.so"

@@ -329,6 +329,124 @@ func (w *steamcmdProgressWriter) handleLine(line string) {
 	w.lastSpeedAt = now
 }
 
+// stageSteamclientSO copies the host's steamcmd-provided steamclient.so (both
+// 64-bit and 32-bit) into <baseDir>/steamclient/linux{64,32}/ so the container
+// entrypoint can link ~/.steam/sdk{64,32}/steamclient.so to a version that
+// actually matches the installed Source 2 runtime.
+//
+// Background: steamcmd installs CS2 game files into baseDir but keeps
+// steamclient.so in its own Steam tree (~/.steam/steam/linux64/ or similar).
+// That file is therefore not reachable from inside the CS2 container, which
+// only bind-mounts baseDir. The previous entrypoint fallback was to pull a
+// fresh steamclient.so from media.steampowered.com, but the copy shipped in
+// the old steamcmd tarball there lacks the SteamUtils010 / SteamUser023
+// interfaces that Source 2 needs — leading to [S_API FAIL] errors on server
+// boot and silently dropped client connections (A2S works, `connect` does
+// not).
+//
+// We copy a real file (not a symlink) so the contents are present inside the
+// bind mount without needing any host paths to be reachable from the
+// container.
+func stageSteamclientSO(baseDir string) error {
+	candidates64 := steamclientSearchPaths("linux64")
+	candidates32 := steamclientSearchPaths("linux32")
+
+	src64 := firstExistingFile(candidates64)
+	if src64 == "" {
+		return fmt.Errorf("steamclient.so (64) not found in any of: %v", candidates64)
+	}
+	dst64Dir := filepath.Join(baseDir, "steamclient", "linux64")
+	if err := os.MkdirAll(dst64Dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dst64Dir, err)
+	}
+	if err := copyFile(src64, filepath.Join(dst64Dir, "steamclient.so")); err != nil {
+		return fmt.Errorf("copy 64: %w", err)
+	}
+	fmt.Printf("[agent] staged steamclient.so (64) from %s → %s\n", src64, dst64Dir)
+
+	if src32 := firstExistingFile(candidates32); src32 != "" {
+		dst32Dir := filepath.Join(baseDir, "steamclient", "linux32")
+		_ = os.MkdirAll(dst32Dir, 0o755)
+		if err := copyFile(src32, filepath.Join(dst32Dir, "steamclient.so")); err != nil {
+			fmt.Printf("[agent] WARN: copy 32-bit steamclient.so failed: %v\n", err)
+		} else {
+			fmt.Printf("[agent] staged steamclient.so (32) from %s → %s\n", src32, dst32Dir)
+		}
+	}
+	return nil
+}
+
+// steamclientSearchPaths returns locations where steamcmd typically drops its
+// steamclient.so on a Linux host. arch is "linux64" or "linux32".
+func steamclientSearchPaths(arch string) []string {
+	homes := []string{}
+	if h, err := os.UserHomeDir(); err == nil && h != "" {
+		homes = append(homes, h)
+	}
+	// Agent usually runs as root; also probe typical steam-user home.
+	for _, h := range []string{"/root", "/home/steam"} {
+		dup := false
+		for _, existing := range homes {
+			if existing == h {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			homes = append(homes, h)
+		}
+	}
+
+	var paths []string
+	for _, h := range homes {
+		paths = append(paths,
+			filepath.Join(h, ".steam", "steam", arch, "steamclient.so"),
+			filepath.Join(h, ".steam", "sdk64", "steamclient.so"), // only for arch==linux64 but cheap to probe
+			filepath.Join(h, ".steam", "steamcmd", arch, "steamclient.so"),
+			filepath.Join(h, "Steam", arch, "steamclient.so"),
+			filepath.Join(h, ".local", "share", "Steam", arch, "steamclient.so"),
+		)
+	}
+	paths = append(paths,
+		filepath.Join("/usr/games/steamcmd", arch, "steamclient.so"),
+		filepath.Join("/usr/lib/games/steam", arch, "steamclient.so"),
+		filepath.Join("/usr/lib/steamcmd", arch, "steamclient.so"),
+	)
+	return paths
+}
+
+func firstExistingFile(paths []string) string {
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Size() > 0 {
+			return p
+		}
+	}
+	return ""
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := dst + ".tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
 // downloadCS2ViaSteamCMD runs steamcmd to install/update CS2 (app 730) into baseDir.
 // Retries up to 5 times. Critically — checks SteamCMD output for failure markers
 // (e.g. "Error! App '730' state is 0x602") instead of only checking if the binary
@@ -379,10 +497,16 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 			strings.Contains(output, "Success! App '730' already up to date") ||
 			strings.Contains(output, "fully installed.") {
 			fmt.Printf("[agent] SteamCMD attempt %d: success\n", attempt)
+			if err := stageSteamclientSO(baseDir); err != nil {
+				fmt.Printf("[agent] WARN: failed to stage steamclient.so into %s: %v\n", baseDir, err)
+			}
 			return nil
 		} else {
 			// Binary exists and no explicit error — accept with a warning
 			fmt.Printf("[agent] SteamCMD attempt %d: binary exists, no success marker — accepting\n", attempt)
+			if err := stageSteamclientSO(baseDir); err != nil {
+				fmt.Printf("[agent] WARN: failed to stage steamclient.so into %s: %v\n", baseDir, err)
+			}
 			return nil
 		}
 
