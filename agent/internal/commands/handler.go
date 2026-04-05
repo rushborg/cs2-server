@@ -598,17 +598,14 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		}
 	}
 
-	// Hardlink copy cs2-base → instance cs2-data (instant, no extra disk)
-	os.MkdirAll(cs2DataDir, 0o755)
-	if _, err := os.Stat(filepath.Join(cs2DataDir, "game", "bin", "linuxsteamrt64", "cs2")); os.IsNotExist(err) {
-		cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			// Fallback to regular copy
-			cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
-			if out2, err2 := cmd.CombinedOutput(); err2 != nil {
-				return nil, fmt.Errorf("copy cs2-base to instance: %w\noutput: %s %s", err2, out, out2)
-			}
-		}
+	// Hardlink copy cs2-base → instance cs2-data (instant, no extra disk).
+	// Uses a completion marker + critical-file verification so that a
+	// previously interrupted copy (OOM, EIO, agent restart, SIGKILL) is
+	// detected and the instance dir is rebuilt from scratch. Without this,
+	// a half-copied instance with just the cs2 binary could slip past and
+	// the container would crash-loop with "Can't find csgo/gameinfo.gi".
+	if err := syncCs2DataFromBase(cs2DataDir, baseDir); err != nil {
+		return nil, fmt.Errorf("sync cs2-base to instance: %w", err)
 	}
 
 	// Write server.cfg (with size limit and basic validation)
@@ -1030,14 +1027,14 @@ func (h *Handler) updateBase() (interface{}, error) {
 	)
 	cmd.CombinedOutput() // exits when CS2 tries to bind port 0
 
-	// 5. Recreate per-instance hardlink copies from updated base
+	// 5. Recreate per-instance hardlink copies from updated base. Force a
+	// full rebuild by removing the marker first, so the helper always
+	// reruns the copy (base has new files).
 	for _, port := range instances {
 		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
-		os.RemoveAll(cs2Data)
-		cpCmd := exec.Command("cp", "-al", base+"/.", cs2Data+"/")
-		if out, cpErr := cpCmd.CombinedOutput(); cpErr != nil {
-			exec.Command("cp", "-a", base+"/.", cs2Data+"/").CombinedOutput()
-			_ = out
+		os.Remove(filepath.Join(cs2Data, ".rushborg-cs2-ready"))
+		if err := syncCs2DataFromBase(cs2Data, base); err != nil {
+			fmt.Printf("[agent] force-update: sync instance %d failed: %v\n", port, err)
 		}
 	}
 
@@ -1262,4 +1259,89 @@ func (h *Handler) runCompose(dir string, args ...string) (string, error) {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// cs2CriticalFiles are files which MUST exist in a working instance dir.
+// Used to detect half-finished copies (interrupted cp, OOM, disk full, etc.)
+// and force a clean re-copy. The cs2 binary alone is not a reliable marker
+// because `cp -a` copies alphabetically and `bin/` comes before `csgo/`.
+var cs2CriticalFiles = []string{
+	"game/bin/linuxsteamrt64/cs2",
+	"game/csgo/gameinfo.gi",
+}
+
+const cs2ReadyMarker = ".rushborg-cs2-ready"
+
+// syncCs2DataFromBase ensures cs2DataDir contains a complete copy of baseDir.
+// It uses a marker file written only after a successful copy; if the marker
+// is missing or any critical file is missing, the instance dir is wiped and
+// rebuilt from scratch. Copy is hardlinked (cp -al) when possible, with a
+// full deep-copy fallback for cross-filesystem cases.
+func syncCs2DataFromBase(cs2DataDir, baseDir string) error {
+	if err := os.MkdirAll(cs2DataDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", cs2DataDir, err)
+	}
+
+	// Check if we already have a good copy: marker present AND all critical
+	// files present. If any check fails, we treat the dir as dirty and
+	// rebuild.
+	if isCs2DataReady(cs2DataDir) {
+		return nil
+	}
+
+	// Dirty state: wipe the instance dir before re-copying. We don't want
+	// `cp -al` to fail mid-way because stale files from a previous attempt
+	// are already present — hardlinks can't overwrite regular files in all
+	// cp versions, and leftover half-copied files waste inodes.
+	fmt.Printf("[agent] cs2-data %s is incomplete, rebuilding from base\n", cs2DataDir)
+	if err := os.RemoveAll(cs2DataDir); err != nil {
+		return fmt.Errorf("cleanup stale cs2-data: %w", err)
+	}
+	if err := os.MkdirAll(cs2DataDir, 0o755); err != nil {
+		return fmt.Errorf("recreate cs2-data: %w", err)
+	}
+
+	// Prefer hardlink copy (instant, no extra disk). Fall back to deep copy
+	// if source and destination are on different filesystems.
+	cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("[agent] cp -al failed (%v), falling back to cp -a: %s\n", err, string(out))
+		cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
+		if out2, err2 := cmd.CombinedOutput(); err2 != nil {
+			return fmt.Errorf("cp -a failed: %w\noutput: %s", err2, string(out2))
+		}
+	}
+
+	// Verify critical files actually landed. If not, something is wrong
+	// with the base directory itself — surface the error instead of writing
+	// the marker and letting the container crash-loop.
+	for _, rel := range cs2CriticalFiles {
+		p := filepath.Join(cs2DataDir, rel)
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("post-copy verification failed: missing %s (%w)", rel, err)
+		}
+	}
+
+	// Write marker only after all checks pass. Marker presence = copy is
+	// trustworthy.
+	markerPath := filepath.Join(cs2DataDir, cs2ReadyMarker)
+	if err := os.WriteFile(markerPath, []byte(""), 0o644); err != nil {
+		return fmt.Errorf("write ready marker: %w", err)
+	}
+	return nil
+}
+
+// isCs2DataReady returns true if cs2DataDir has a ready marker and all
+// critical files present. Any missing piece means "not ready".
+func isCs2DataReady(cs2DataDir string) bool {
+	if _, err := os.Stat(filepath.Join(cs2DataDir, cs2ReadyMarker)); err != nil {
+		return false
+	}
+	for _, rel := range cs2CriticalFiles {
+		if _, err := os.Stat(filepath.Join(cs2DataDir, rel)); err != nil {
+			return false
+		}
+	}
+	return true
 }
