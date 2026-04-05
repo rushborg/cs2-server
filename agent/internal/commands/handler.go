@@ -415,6 +415,50 @@ func steamclientSearchPaths(arch string) []string {
 	return paths
 }
 
+// ensureSteamclientInInstance copies the staged steamclient.so files from
+// baseDir into cs2DataDir if they are missing. This is idempotent and cheap
+// (just two stat calls when already present). It exists because
+// syncCs2DataFromBase is skipped for "ready" instances (marker present), so
+// instances created before stageSteamclientSO existed would otherwise never
+// receive the .so files. We also re-stage from host into baseDir as a
+// self-heal in case cs2-base itself is missing them.
+func ensureSteamclientInInstance(cs2DataDir, baseDir string) error {
+	// Self-heal baseDir first — if stageSteamclientSO was never run for
+	// this host (old agent installed CS2 before the fix landed), the files
+	// won't be there yet.
+	baseSrc64 := filepath.Join(baseDir, "steamclient", "linux64", "steamclient.so")
+	if _, err := os.Stat(baseSrc64); err != nil {
+		if serr := stageSteamclientSO(baseDir); serr != nil {
+			return fmt.Errorf("self-heal stage steamclient into cs2-base: %w", serr)
+		}
+	}
+
+	type pair struct{ arch string }
+	for _, p := range []pair{{"linux64"}, {"linux32"}} {
+		src := filepath.Join(baseDir, "steamclient", p.arch, "steamclient.so")
+		dstDir := filepath.Join(cs2DataDir, "steamclient", p.arch)
+		dst := filepath.Join(dstDir, "steamclient.so")
+		if _, err := os.Stat(dst); err == nil {
+			continue // already present
+		}
+		if _, err := os.Stat(src); err != nil {
+			if p.arch == "linux32" {
+				// 32-bit is optional — some hosts only have 64-bit.
+				continue
+			}
+			return fmt.Errorf("source steamclient.so missing in cs2-base: %s", src)
+		}
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", dstDir, err)
+		}
+		if err := copyFile(src, dst); err != nil {
+			return fmt.Errorf("copy %s → %s: %w", src, dst, err)
+		}
+		fmt.Printf("[agent] copied steamclient.so (%s) into instance %s\n", p.arch, dstDir)
+	}
+	return nil
+}
+
 func firstExistingFile(paths []string) string {
 	for _, p := range paths {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() && fi.Size() > 0 {
@@ -748,6 +792,16 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	// the container would crash-loop with "Can't find csgo/gameinfo.gi".
 	if err := syncCs2DataFromBase(cs2DataDir, baseDir, h.DockerImage); err != nil {
 		return nil, fmt.Errorf("sync cs2-base to instance: %w", err)
+	}
+
+	// Make sure steamclient.so is present inside the instance's cs2-data
+	// tree (the only path the container actually bind-mounts). This is
+	// idempotent — it's a no-op once the files are there. Needed because
+	// syncCs2DataFromBase is skipped for "ready" instances created before
+	// stageSteamclientSO existed, and because per-instance cs2-data is the
+	// only thing the container sees (cs2-base is not mounted directly).
+	if err := ensureSteamclientInInstance(cs2DataDir, baseDir); err != nil {
+		return nil, fmt.Errorf("ensure steamclient.so in instance: %w", err)
 	}
 
 	// Write server.cfg (with size limit and basic validation)
