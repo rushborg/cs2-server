@@ -1328,11 +1328,42 @@ func syncCs2DataFromBase(cs2DataDir, baseDir, dockerImage string) error {
 
 	// Prefer hardlink copy (instant, no extra disk). Fall back to deep copy
 	// if source and destination are on different filesystems.
-	cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
-	out, err := cmd.CombinedOutput()
+	//
+	// `cp -al` can fail with EPERM under fs.protected_hardlinks=1 when
+	// baseDir files are owned by a different uid than the agent — this
+	// happens if an older cs2-server container ran `chown -R steam:steam`
+	// on the hardlinked bind mount, which mutates the underlying inodes
+	// (shared with cs2-base) and leaves cs2-base owned by uid=1000. The
+	// entrypoint fix prevents future recurrence, but we also self-heal
+	// here: if cp -al fails, chown cs2-base back to the agent uid via a
+	// privileged docker container and retry once.
+	runHardlinkCopy := func() ([]byte, error) {
+		cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
+		return cmd.CombinedOutput()
+	}
+	out, err := runHardlinkCopy()
 	if err != nil {
-		fmt.Printf("[agent] cp -al failed (%v), falling back to cp -a: %s\n", err, string(out))
-		cmd = exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
+		fmt.Printf("[agent] cp -al failed (%v): %s\n", err, string(out))
+		if fixErr := chownBaseToAgent(baseDir, dockerImage); fixErr != nil {
+			fmt.Printf("[agent] chown cs2-base to agent failed: %v\n", fixErr)
+		} else {
+			// Clear the partially-populated cs2DataDir before retry —
+			// cp -al may have created empty dirs before hitting EPERM.
+			if rmErr := removeCs2DataTree(cs2DataDir, dockerImage); rmErr != nil {
+				fmt.Printf("[agent] cleanup after failed cp -al: %v\n", rmErr)
+			}
+			if err2 := os.MkdirAll(cs2DataDir, 0o755); err2 == nil {
+				if out2, err2 := runHardlinkCopy(); err2 == nil {
+					out, err = out2, nil
+				} else {
+					fmt.Printf("[agent] cp -al retry after chown failed (%v): %s\n", err2, string(out2))
+				}
+			}
+		}
+	}
+	if err != nil {
+		fmt.Printf("[agent] falling back to deep cp -a\n")
+		cmd := exec.Command("cp", "-a", baseDir+"/.", cs2DataDir+"/")
 		if out2, err2 := cmd.CombinedOutput(); err2 != nil {
 			return fmt.Errorf("cp -a failed: %w\noutput: %s", err2, string(out2))
 		}
@@ -1423,6 +1454,40 @@ func removeCs2DataTree(cs2DataDir, dockerImage string) error {
 		"-c", fmt.Sprintf("chown %d:%d /target/%s", uid, gid, base),
 	)
 	chownCmd.Run() // best-effort
+	return nil
+}
+
+// chownBaseToAgent fixes a poisoned cs2-base tree whose inodes ended up owned
+// by the in-container steam user (uid=1000) after a buggy entrypoint ran
+// `chown -R steam:steam` on a hardlinked bind mount. Under
+// fs.protected_hardlinks=1 the agent then can't `cp -al` from it because
+// non-root processes may not hardlink files they don't own. We spawn a
+// throwaway privileged container to chown the tree back to the agent's uid.
+func chownBaseToAgent(baseDir, dockerImage string) error {
+	if dockerImage == "" {
+		return fmt.Errorf("no docker image provided for privileged chown")
+	}
+	parent := filepath.Dir(baseDir)
+	base := filepath.Base(baseDir)
+	if parent == "" || parent == "/" || base == "" || base == "/" {
+		return fmt.Errorf("refusing privileged chown on unsafe path %s", baseDir)
+	}
+	if strings.ContainsAny(base, "` $();|&<>\"'\\\n\r") {
+		return fmt.Errorf("refusing privileged chown on unsafe name %q", base)
+	}
+	uid := os.Getuid()
+	gid := os.Getgid()
+	fmt.Printf("[agent] chowning %s to %d:%d via docker-as-root\n", baseDir, uid, gid)
+	cmd := exec.Command("docker", "run", "--rm",
+		"--user", "0:0",
+		"--entrypoint", "sh",
+		"-v", parent+":/target",
+		dockerImage,
+		"-c", fmt.Sprintf("chown -R %d:%d /target/%s", uid, gid, base),
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("docker chown failed: %w\noutput: %s", err, string(out))
+	}
 	return nil
 }
 

@@ -26,8 +26,25 @@ if [ ! -f "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" ]; then
     exit 1
 fi
 
-# Fix ownership
-chown -R steam:steam "${CS2_DIR}" 2>/dev/null || true
+# ─── Sync steam uid to bind-mount owner ─────────────────
+# The host agent installs CS2 into cs2-base as its own user (e.g. rushborgsrv)
+# and then hardlinks cs2-base into each instance's cs2-data via `cp -al`.
+# If we `chown -R steam:steam` the bind-mounted cs2-dedicated, the chown walks
+# through the hardlinked inodes and ALSO changes ownership of cs2-base files,
+# which then makes the next `cp -al` fail with EPERM under
+# fs.protected_hardlinks=1 (non-root users cannot hardlink files they don't
+# own). Instead, we align the in-container `steam` uid/gid with whatever user
+# already owns the bind mount, so no chown is necessary and the hardlinks stay
+# consistent with cs2-base.
+TARGET_UID=$(stat -c %u "${CS2_DIR}" 2>/dev/null || echo 1000)
+TARGET_GID=$(stat -c %g "${CS2_DIR}" 2>/dev/null || echo 1000)
+CURRENT_STEAM_UID=$(id -u steam 2>/dev/null || echo 1000)
+CURRENT_STEAM_GID=$(id -g steam 2>/dev/null || echo 1000)
+if [ "${TARGET_UID}" != "0" ] && [ "${TARGET_UID}" != "${CURRENT_STEAM_UID}" ]; then
+    log "Re-mapping steam uid ${CURRENT_STEAM_UID} -> ${TARGET_UID} to match host bind mount owner"
+    groupmod -o -g "${TARGET_GID}" steam 2>/dev/null || true
+    usermod  -o -u "${TARGET_UID}" -g "${TARGET_GID}" steam 2>/dev/null || true
+fi
 
 # ─── Steamworks SDK shim ────────────────────────────────
 # CS2 gameserver инициализирует Steamworks SDK и ищет steamclient.so в
@@ -110,7 +127,11 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     fi
 
     chmod -R 755 "${CSGO_DIR}/addons/" 2>/dev/null || true
-    chown -R steam:steam "${CSGO_DIR}/addons/" 2>/dev/null || true
+    # NOTE: no chown here — addons/ sits inside the hardlinked cs2-dedicated
+    # tree. A recursive chown would leak into cs2-base inodes and break
+    # subsequent `cp -al` from the agent. Plugin files are fresh (created
+    # inside the container) and already belong to the bind-mount owner uid
+    # via our entrypoint usermod.
 
     # CSSharp core config
     if [ -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json" ] && \
