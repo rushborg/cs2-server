@@ -40,6 +40,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir
       - seccomp:unconfined
     environment:
       - CS2_PORT=%d
+      - CS2_STEAM_PORT=%d
       - CS2_GOTV_PORT=%d
       - CS2_MAP=de_mirage
       - CS2_MAXPLAYERS=%d
@@ -59,7 +60,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, dataDir
       - "rushborg.managed=true"
       - "rushborg.port=%d"
       - "rushborg.hostname=%s"
-`, image, port, port, gotvPort, maxPlayers, gameType, gameMode, gsltEnv,
+`, image, port, port, port-10, gotvPort, maxPlayers, gameType, gameMode, gsltEnv,
 		instDir, instDir, instDir, sharedDir, sharedDir, sharedDir, instDir,
 		port, hostname), nil
 }

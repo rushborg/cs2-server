@@ -217,9 +217,24 @@ chown -R steam:steam /demos 2>/dev/null || true
 CS2_TICKRATE="${CS2_TICKRATE:-128}"
 log "Tickrate: ${CS2_TICKRATE}"
 
+# ─── Steam socket port ──────────────────────────────────
+# CS2 uses a separate UDP socket for Steam master registration / client auth
+# handshake. Without an explicit -steamport, multiple instances running under
+# network_mode: host collide on the auto-assigned port: A2S (on main -port)
+# still responds on all instances, but client `connect` and Steam server
+# browser registration only work for whichever instance grabbed the socket
+# first. Derive a unique steamport from the game port using the classic
+# Source-engine convention (game_port - 10) unless explicitly overridden.
+CS2_GAME_PORT="${CS2_PORT:-27015}"
+if [ -z "${CS2_STEAM_PORT}" ]; then
+    CS2_STEAM_PORT=$((CS2_GAME_PORT - 10))
+fi
+log "Steam port: ${CS2_STEAM_PORT}"
+
 exec gosu steam "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
     +ip 0.0.0.0 \
-    -port "${CS2_PORT:-27015}" \
+    -port "${CS2_GAME_PORT}" \
+    -steamport "${CS2_STEAM_PORT}" \
     +tv_port "${CS2_GOTV_PORT:-27020}" \
     -maxplayers "${CS2_MAXPLAYERS:-10}" \
     -tickrate "${CS2_TICKRATE}" \
