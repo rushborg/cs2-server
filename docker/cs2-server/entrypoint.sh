@@ -180,11 +180,28 @@ if [ -d /custom/maps ] && [ -d "${CSGO_DIR}" ]; then
     cp -f /custom/maps/*.nav "${CSGO_DIR}/maps/" 2>/dev/null || true
 fi
 
-# ─── Override MatchZy chat prefix ───────────────────────
+# ─── Override MatchZy config.cfg ─────────────────────────
+# MatchZy reads its ConVars ONLY from cfg/MatchZy/config.cfg at plugin init.
+# Our cfg/matchzy.cfg (exec'd from server.cfg) sets generic server-level
+# settings but MatchZy-specific ConVars must live in its own config file.
 MATCHZY_CFG="${CSGO_DIR}/cfg/MatchZy/config.cfg"
-if [ -f "${MATCHZY_CFG}" ] && ! grep -q "RUSH-B.ORG" "${MATCHZY_CFG}" 2>/dev/null; then
-    sed -i 's|^matchzy_chat_prefix.*|matchzy_chat_prefix [{Green}RUSH-B.ORG{Default}]|' "${MATCHZY_CFG}"
-    log "MatchZy chat prefix set to [RUSH-B.ORG]"
+if [ -f "${MATCHZY_CFG}" ]; then
+    # Chat prefix
+    if ! grep -q "RUSH-B.ORG" "${MATCHZY_CFG}" 2>/dev/null; then
+        sed -i 's|^matchzy_chat_prefix.*|matchzy_chat_prefix [{Green}RUSH-B.ORG{Default}]|' "${MATCHZY_CFG}"
+        log "MatchZy chat prefix set to [RUSH-B.ORG]"
+    fi
+
+    # Whitelist enforcement — idle-сервер без загруженного матча кикает всех;
+    # при загрузке матча whitelist наполняется SteamID из team1/team2/spectators.
+    if ! grep -q "matchzy_kick_when_no_match_loaded" "${MATCHZY_CFG}" 2>/dev/null; then
+        printf '\n// RUSH-B.ORG: whitelist enforcement\nmatchzy_kick_when_no_match_loaded true\nmatchzy_whitelist_enabled_default true\n' >> "${MATCHZY_CFG}"
+        log "MatchZy whitelist enforcement enabled"
+    else
+        # Ensure values are 'true' even if someone set them to 'false'
+        sed -i 's|^matchzy_kick_when_no_match_loaded.*|matchzy_kick_when_no_match_loaded true|' "${MATCHZY_CFG}"
+        sed -i 's|^matchzy_whitelist_enabled_default.*|matchzy_whitelist_enabled_default true|' "${MATCHZY_CFG}"
+    fi
 fi
 
 # ─── Start CS2 ──────────────────────────────────────────
