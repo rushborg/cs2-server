@@ -793,6 +793,11 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		}
 	}
 
+	// Force clean rebuild: remove the ready marker so syncCs2DataFromBase
+	// wipes the old cs2-data and re-copies from cs2-base. This clears all
+	// stale state: MatchZy match backups, plugin marker, cached configs.
+	os.Remove(filepath.Join(cs2DataDir, cs2ReadyMarker))
+
 	// Hardlink copy cs2-base → instance cs2-data (instant, no extra disk).
 	// Uses a completion marker + critical-file verification so that a
 	// previously interrupted copy (OOM, EIO, agent restart, SIGKILL) is
@@ -847,22 +852,11 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		return nil, fmt.Errorf("writing docker-compose.yml: %w", err)
 	}
 
-	// Pull latest image before starting
-	fmt.Printf("[agent] deploy %d: docker compose pull\n", p.Port)
-	if pullOut, pullErr := h.runCompose(dir, "pull"); pullErr != nil {
-		// Non-fatal — image may already be present locally. Log and continue.
-		fmt.Printf("[agent] deploy %d: compose pull warning: %v\n%s\n", p.Port, pullErr, string(pullOut))
-	}
-
-	// docker compose up -d --force-recreate
-	// --force-recreate гарантирует, что при redeploy контейнер реально
-	// пересоздаётся и entrypoint повторно копирует /instance/config/*.cfg
-	// (включая обновлённый matchzy.cfg) в игровой cfg-каталог и выполняет
-	// exec matchzy.cfg. Без этого флага, если compose-файл не изменился,
-	// compose оставляет уже запущенный контейнер как есть, и новые cvar'ы
-	// из matchzy.cfg в память CS2 не подтягиваются.
-	fmt.Printf("[agent] deploy %d: docker compose up -d --force-recreate\n", p.Port)
-	out, err := h.runCompose(dir, "up", "-d", "--force-recreate")
+	// docker compose up -d --force-recreate --pull always
+	// --force-recreate: container is fully recreated, entrypoint re-runs
+	// --pull always: Docker pulls the latest image even if a local copy exists
+	fmt.Printf("[agent] deploy %d: docker compose up -d --force-recreate --pull always\n", p.Port)
+	out, err := h.runCompose(dir, "up", "-d", "--force-recreate", "--pull", "always")
 	if err != nil {
 		return nil, fmt.Errorf("docker compose up: %w\noutput: %s", err, out)
 	}
