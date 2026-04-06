@@ -120,28 +120,6 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     # inside the container) and already belong to the bind-mount owner uid
     # via our entrypoint usermod.
 
-    # CSSharp core config — set server language to Russian
-    if [ -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json" ] && \
-       [ ! -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json" ]; then
-        cp "${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json" \
-           "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json"
-    fi
-    if [ -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json" ]; then
-        # Set ServerLanguage to "ru" for Russian translations
-        if command -v python3 >/dev/null 2>&1; then
-            python3 -c "
-import json, sys
-p = '${CSGO_DIR}/addons/counterstrikesharp/configs/core.json'
-with open(p) as f: d = json.load(f)
-d['ServerLanguage'] = 'ru'
-with open(p, 'w') as f: json.dump(d, f, indent=2)
-" 2>/dev/null || true
-        else
-            sed -i 's/"ServerLanguage":\s*"[^"]*"/"ServerLanguage": "ru"/' \
-                "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json" 2>/dev/null || true
-        fi
-    fi
-
     # Register CSSharp in MetaMod
     if [ -d "${CSGO_DIR}/addons/counterstrikesharp/bin" ] && [ ! -f "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" ]; then
         cat > "${CSGO_DIR}/addons/metamod/counterstrikesharp.vdf" << 'VDFEOF'
@@ -163,6 +141,19 @@ if [ -f "${GAMEINFO}" ] && [ -d "${CSGO_DIR}/addons/metamod" ]; then
         log "Patching gameinfo.gi for MetaMod..."
         sed -i '/Game_LowViolence/a\\t\t\tGame\tcsgo/addons/metamod' "${GAMEINFO}"
     fi
+fi
+
+# ─── CSSharp ServerLanguage → ru ───────────────────────
+# Must run on every start (not just first install) because core.json
+# lives on a bind-mount that may be recreated by the agent.
+CORE_JSON="${CSGO_DIR}/addons/counterstrikesharp/configs/core.json"
+CORE_EXAMPLE="${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json"
+if [ -f "${CORE_EXAMPLE}" ] && [ ! -f "${CORE_JSON}" ]; then
+    cp "${CORE_EXAMPLE}" "${CORE_JSON}"
+fi
+if [ -f "${CORE_JSON}" ]; then
+    sed -i -E 's/"ServerLanguage":[[:space:]]*"[^"]*"/"ServerLanguage": "ru"/' "${CORE_JSON}"
+    log "CSSharp ServerLanguage set to ru"
 fi
 
 # ─── MatchZy Russian translation ────────────────────────
