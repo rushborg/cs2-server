@@ -161,23 +161,23 @@ log "Applying configs..."
 
 if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/cfg"
-    cp -f /instance/config/*.cfg "${CSGO_DIR}/cfg/" 2>/dev/null || true
+    cp --remove-destination /instance/config/*.cfg "${CSGO_DIR}/cfg/" 2>/dev/null || true
 fi
 
 if [ -f /shared/admins_simple.ini ] && [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/configs"
-    cp -f /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
+    cp --remove-destination /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
 fi
 
 if [ -d /custom/plugins ] && [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/plugins"
-    cp -f /custom/plugins/*.dll "${CSGO_DIR}/addons/counterstrikesharp/plugins/" 2>/dev/null || true
+    cp --remove-destination /custom/plugins/*.dll "${CSGO_DIR}/addons/counterstrikesharp/plugins/" 2>/dev/null || true
 fi
 
 if [ -d /custom/maps ] && [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/maps"
-    cp -f /custom/maps/*.bsp "${CSGO_DIR}/maps/" 2>/dev/null || true
-    cp -f /custom/maps/*.nav "${CSGO_DIR}/maps/" 2>/dev/null || true
+    cp --remove-destination /custom/maps/*.bsp "${CSGO_DIR}/maps/" 2>/dev/null || true
+    cp --remove-destination /custom/maps/*.nav "${CSGO_DIR}/maps/" 2>/dev/null || true
 fi
 
 # ─── Override MatchZy config.cfg ─────────────────────────
