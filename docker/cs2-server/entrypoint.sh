@@ -164,9 +164,15 @@ if [ -d /instance/config ] && [ -d "${CSGO_DIR}" ]; then
     cp --remove-destination /instance/config/*.cfg "${CSGO_DIR}/cfg/" 2>/dev/null || true
 fi
 
-if [ -f /shared/admins_simple.ini ] && [ -d "${CSGO_DIR}" ]; then
+if [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/configs"
-    cp --remove-destination /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
+    if [ -f /shared/admins_simple.ini ]; then
+        cp --remove-destination /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
+    fi
+    if [ -f /shared/admins.json ]; then
+        cp --remove-destination /shared/admins.json "${CSGO_DIR}/addons/counterstrikesharp/configs/admins.json" 2>/dev/null || true
+        log "CounterStrikeSharp admins.json synced"
+    fi
 fi
 
 if [ -d /custom/plugins ] && [ -d "${CSGO_DIR}" ]; then

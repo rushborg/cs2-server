@@ -63,7 +63,8 @@ type UpdateAgentPayload struct {
 }
 
 type SyncAdminsPayload struct {
-	Content string `json:"content"`
+	Content    string `json:"content"`
+	AdminsJSON string `json:"admins_json"`
 }
 
 type RestartServersPayload struct {
@@ -639,7 +640,7 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result
 		if err := json.Unmarshal(payload, &p); err != nil {
 			return nil, fmt.Errorf("invalid sync payload: %w", err)
 		}
-		return h.syncAdmins(p.Content)
+		return h.syncAdmins(p.Content, p.AdminsJSON)
 
 	case "restart_idle_servers":
 		var p RestartServersPayload
@@ -930,9 +931,8 @@ func (h *Handler) updateImage(tag string) (interface{}, error) {
 	return map[string]string{"status": "pulled", "image": image}, nil
 }
 
-func (h *Handler) syncAdmins(content string) (interface{}, error) {
-	// Validate content: only allow comment lines and admin entries
-	// Format: "STEAM_0:X:XXXXXXX" "b"
+func (h *Handler) syncAdmins(content, adminsJSON string) (interface{}, error) {
+	// Validate SourceMod content: only allow comment lines and admin entries
 	if len(content) > 64*1024 {
 		return nil, fmt.Errorf("admins content too large (%d bytes)", len(content))
 	}
@@ -941,7 +941,6 @@ func (h *Handler) syncAdmins(content string) (interface{}, error) {
 		if line == "" || strings.HasPrefix(line, "//") {
 			continue
 		}
-		// Must match pattern: "STEAM_..." "..."
 		if !strings.HasPrefix(line, `"STEAM_`) && !strings.HasPrefix(line, `"[U:`) {
 			return nil, fmt.Errorf("invalid admin entry: %s", line)
 		}
@@ -949,10 +948,21 @@ func (h *Handler) syncAdmins(content string) (interface{}, error) {
 
 	sharedDir := filepath.Join(h.DataDir, "shared")
 	os.MkdirAll(sharedDir, 0o755)
-	path := filepath.Join(sharedDir, "admins_simple.ini")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		return nil, fmt.Errorf("writing admins: %w", err)
+
+	// Write SourceMod admins_simple.ini
+	smPath := filepath.Join(sharedDir, "admins_simple.ini")
+	if err := os.WriteFile(smPath, []byte(content), 0o600); err != nil {
+		return nil, fmt.Errorf("writing admins_simple.ini: %w", err)
 	}
+
+	// Write CounterStrikeSharp admins.json (used by MatchZy)
+	if adminsJSON != "" {
+		cssPath := filepath.Join(sharedDir, "admins.json")
+		if err := os.WriteFile(cssPath, []byte(adminsJSON), 0o600); err != nil {
+			return nil, fmt.Errorf("writing admins.json: %w", err)
+		}
+	}
+
 	return map[string]string{"status": "synced"}, nil
 }
 
