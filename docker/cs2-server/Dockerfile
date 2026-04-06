@@ -15,6 +15,7 @@ RUN useradd -m -u 1000 -s /bin/bash steam
 VOLUME ["/home/steam/cs2-dedicated", "/instance/config", "/instance/data", "/shared", "/custom/plugins", "/custom/maps", "/demos"]
 
 COPY entrypoint.sh /rushborg-entrypoint.sh
+COPY lang_ru.json /rushborg-lang_ru.json
 RUN chmod +x /rushborg-entrypoint.sh
 
 ENTRYPOINT ["/rushborg-entrypoint.sh"]

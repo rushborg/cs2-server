@@ -50,7 +50,7 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, rconPas
       - CS2_MAXPLAYERS=%d
       - CS2_GAME_TYPE=%d
       - CS2_GAME_MODE=%d
-      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1%s%s
+      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0%s%s
     volumes:
       - %s/cs2-data:/home/steam/cs2-dedicated
       - %s/config:/instance/config:ro

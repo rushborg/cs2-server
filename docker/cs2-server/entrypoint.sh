@@ -120,11 +120,26 @@ if [ -d "${CSGO_DIR}" ] && [ ! -f "${PLUGIN_MARKER}" ]; then
     # inside the container) and already belong to the bind-mount owner uid
     # via our entrypoint usermod.
 
-    # CSSharp core config
+    # CSSharp core config — set server language to Russian
     if [ -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json" ] && \
        [ ! -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json" ]; then
         cp "${CSGO_DIR}/addons/counterstrikesharp/configs/core.example.json" \
            "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json"
+    fi
+    if [ -f "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json" ]; then
+        # Set ServerLanguage to "ru" for Russian translations
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -c "
+import json, sys
+p = '${CSGO_DIR}/addons/counterstrikesharp/configs/core.json'
+with open(p) as f: d = json.load(f)
+d['ServerLanguage'] = 'ru'
+with open(p, 'w') as f: json.dump(d, f, indent=2)
+" 2>/dev/null || true
+        else
+            sed -i 's/"ServerLanguage":\s*"[^"]*"/"ServerLanguage": "ru"/' \
+                "${CSGO_DIR}/addons/counterstrikesharp/configs/core.json" 2>/dev/null || true
+        fi
     fi
 
     # Register CSSharp in MetaMod
@@ -148,6 +163,14 @@ if [ -f "${GAMEINFO}" ] && [ -d "${CSGO_DIR}/addons/metamod" ]; then
         log "Patching gameinfo.gi for MetaMod..."
         sed -i '/Game_LowViolence/a\\t\t\tGame\tcsgo/addons/metamod' "${GAMEINFO}"
     fi
+fi
+
+# ─── MatchZy Russian translation ────────────────────────
+MATCHZY_LANG_DIR="${CSGO_DIR}/addons/counterstrikesharp/plugins/MatchZy/lang"
+if [ -d "${CSGO_DIR}/addons/counterstrikesharp/plugins/MatchZy" ] && [ -f /rushborg-lang_ru.json ]; then
+    mkdir -p "${MATCHZY_LANG_DIR}"
+    cp --remove-destination /rushborg-lang_ru.json "${MATCHZY_LANG_DIR}/ru.json"
+    log "MatchZy Russian translation installed"
 fi
 
 # ─── CSSharp log file ───────────────────────────────────

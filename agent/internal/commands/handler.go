@@ -1199,7 +1199,7 @@ func (h *Handler) setupBase() (interface{}, error) {
 		"-v", base+":/home/steam/cs2-dedicated",
 		"-e", "CS2_PORT=0", // won't actually bind
 		"--security-opt", "seccomp=unconfined",
-		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
+		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0",
 		h.DockerImage,
 	)
 	out, err := cmd.CombinedOutput()
@@ -1237,7 +1237,7 @@ func (h *Handler) updateBase() (interface{}, error) {
 		"-v", base+":/home/steam/cs2-dedicated",
 		"-e", "CS2_PORT=0",
 		"--security-opt", "seccomp=unconfined",
-		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1",
+		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0",
 		h.DockerImage,
 	)
 	cmd.CombinedOutput() // exits when CS2 tries to bind port 0
