@@ -844,7 +844,7 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	if maxPlayers <= 0 {
 		maxPlayers = 10
 	}
-	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken, h.DataDir, maxPlayers, p.GameType, p.GameMode)
+	compose, err := GenerateComposeFile(p.Port, gotvPort, h.DockerImage, p.Hostname, p.GsltToken, p.RCONPassword, h.DataDir, maxPlayers, p.GameType, p.GameMode)
 	if err != nil {
 		return nil, fmt.Errorf("generating compose file: %w", err)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestGenerateComposeFile(t *testing.T) {
-	compose, err := GenerateComposeFile(27015, 27020, "ghcr.io/rushborg/cs2-server:latest", "test-server", "GSLT123", "/opt/rushborg-srv", 10, 0, 1)
+	compose, err := GenerateComposeFile(27015, 27020, "ghcr.io/rushborg/cs2-server:latest", "test-server", "GSLT123", "testpass123", "/opt/rushborg-srv", 10, 0, 1)
 	if err != nil {
 		t.Fatalf("GenerateComposeFile failed: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestGenerateComposeFile(t *testing.T) {
 }
 
 func TestGenerateComposeNoGSLT(t *testing.T) {
-	compose, err := GenerateComposeFile(27015, 27020, "test:latest", "server", "", "/data", 10, 0, 1)
+	compose, err := GenerateComposeFile(27015, 27020, "test:latest", "server", "", "", "/data", 10, 0, 1)
 	if err != nil {
 		t.Fatalf("failed: %v", err)
 	}
@@ -52,14 +52,14 @@ func TestGenerateComposeNoGSLT(t *testing.T) {
 }
 
 func TestGenerateComposeInvalidPort(t *testing.T) {
-	_, err := GenerateComposeFile(80, 27020, "test:latest", "server", "", "/data", 10, 0, 1)
+	_, err := GenerateComposeFile(80, 27020, "test:latest", "server", "", "", "/data", 10, 0, 1)
 	if err == nil {
 		t.Error("should reject port 80")
 	}
 }
 
 func TestGenerateComposeSafeHostname(t *testing.T) {
-	compose, err := GenerateComposeFile(27015, 27020, "test:latest", "unsafe hostname!!!", "", "/data", 10, 0, 1)
+	compose, err := GenerateComposeFile(27015, 27020, "test:latest", "unsafe hostname!!!", "", "", "/data", 10, 0, 1)
 	if err != nil {
 		t.Fatalf("failed: %v", err)
 	}

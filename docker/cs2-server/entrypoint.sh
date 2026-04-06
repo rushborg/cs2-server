@@ -213,6 +213,13 @@ if [ -n "${CS2_GSLT}" ]; then
     log "GSLT token configured"
 fi
 
+# CS2 no longer loads rcon_password from +exec server.cfg — it must be
+# passed directly on the command line.
+RCON_ARG=""
+if [ -n "${CS2_RCON_PASSWORD}" ]; then
+    RCON_ARG="+rcon_password ${CS2_RCON_PASSWORD}"
+fi
+
 export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"
 
 chown -R steam:steam /instance/data 2>/dev/null || true
@@ -245,5 +252,6 @@ exec gosu steam "${CS2_DIR}/game/bin/linuxsteamrt64/cs2" -dedicated \
     +map "${CS2_MAP:-de_mirage}" \
     +game_type "${CS2_GAME_TYPE:-0}" +game_mode "${CS2_GAME_MODE:-1}" \
     +exec server.cfg \
+    ${RCON_ARG} \
     ${GSLT_ARG} \
     -usercon
