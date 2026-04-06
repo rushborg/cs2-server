@@ -853,6 +853,9 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 		return nil, fmt.Errorf("writing docker-compose.yml: %w", err)
 	}
 
+	// Ensure firewall ports are open for this instance
+	ensureUFWPorts(p.Port, gotvPort)
+
 	// docker compose up -d --force-recreate --pull always
 	// --force-recreate: container is fully recreated, entrypoint re-runs
 	// --pull always: Docker pulls the latest image even if a local copy exists
@@ -886,7 +889,50 @@ func (h *Handler) removeServer(port int) (interface{}, error) {
 		return nil, fmt.Errorf("docker compose down: %w\noutput: %s", err, out)
 	}
 	os.RemoveAll(dir)
+
+	// Clean up firewall rules for this instance
+	closeUFWPorts(port, port+5)
+
 	return map[string]string{"status": "removed"}, nil
+}
+
+// ─── UFW firewall helpers ─────────────────────────────────
+
+// ensureUFWPorts opens TCP+UDP for the game port and GOTV port.
+// Idempotent: ufw skip-adds if the rule already exists.
+func ensureUFWPorts(gamePort, gotvPort int) {
+	if _, err := exec.LookPath("ufw"); err != nil {
+		return // ufw not installed, skip
+	}
+	ports := []int{gamePort, gotvPort}
+	for _, port := range ports {
+		for _, proto := range []string{"tcp", "udp"} {
+			rule := fmt.Sprintf("%d/%s", port, proto)
+			out, err := exec.Command("ufw", "allow", rule).CombinedOutput()
+			if err != nil {
+				fmt.Printf("[agent] ufw allow %s: %v (%s)\n", rule, err, strings.TrimSpace(string(out)))
+			} else {
+				fmt.Printf("[agent] ufw allow %s: ok\n", rule)
+			}
+		}
+	}
+}
+
+// closeUFWPorts removes firewall rules for a deleted server instance.
+func closeUFWPorts(gamePort, gotvPort int) {
+	if _, err := exec.LookPath("ufw"); err != nil {
+		return
+	}
+	ports := []int{gamePort, gotvPort}
+	for _, port := range ports {
+		for _, proto := range []string{"tcp", "udp"} {
+			rule := fmt.Sprintf("%d/%s", port, proto)
+			out, err := exec.Command("ufw", "delete", "allow", rule).CombinedOutput()
+			if err != nil {
+				fmt.Printf("[agent] ufw delete allow %s: %v (%s)\n", rule, err, strings.TrimSpace(string(out)))
+			}
+		}
+	}
 }
 
 func (h *Handler) restartServer(port int) (interface{}, error) {
