@@ -167,11 +167,11 @@ fi
 if [ -d "${CSGO_DIR}" ]; then
     mkdir -p "${CSGO_DIR}/addons/counterstrikesharp/configs"
     if [ -f /shared/admins_simple.ini ]; then
-        cp --remove-destination /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini" 2>/dev/null || true
+        ln -sf /shared/admins_simple.ini "${CSGO_DIR}/addons/counterstrikesharp/configs/admins_simple.ini"
     fi
     if [ -f /shared/admins.json ]; then
-        cp --remove-destination /shared/admins.json "${CSGO_DIR}/addons/counterstrikesharp/configs/admins.json" 2>/dev/null || true
-        log "CounterStrikeSharp admins.json synced"
+        ln -sf /shared/admins.json "${CSGO_DIR}/addons/counterstrikesharp/configs/admins.json"
+        log "CounterStrikeSharp admins.json linked (live-updates via shared volume)"
     fi
 fi
 
