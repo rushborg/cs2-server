@@ -221,11 +221,9 @@ if [ -f "${MATCHZY_CFG}" ]; then
         log "MatchZy chat prefix set to [RUSH-B.ORG]"
     fi
 
-    # Whitelist enforcement — idle server without a loaded match kicks everyone;
-    # when a match is loaded, whitelist is populated from team1/team2/spectators.
+    # Whitelist disabled; kick when no match still active so idle servers stay clean.
     if ! grep -q "matchzy_kick_when_no_match_loaded" "${MATCHZY_CFG}" 2>/dev/null; then
-        printf '\n// RUSH-B.ORG: whitelist enforcement\nmatchzy_kick_when_no_match_loaded true\nmatchzy_whitelist_enabled_default true\n' >> "${MATCHZY_CFG}"
-        log "MatchZy whitelist enforcement enabled"
+        printf '\n// RUSH-B.ORG\nmatchzy_kick_when_no_match_loaded true\nmatchzy_whitelist_enabled_default false\n' >> "${MATCHZY_CFG}"
     else
         sed -i 's|^matchzy_kick_when_no_match_loaded.*|matchzy_kick_when_no_match_loaded true|' "${MATCHZY_CFG}"
         sed -i 's|^matchzy_whitelist_enabled_default.*|matchzy_whitelist_enabled_default false|' "${MATCHZY_CFG}"
