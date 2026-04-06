@@ -228,7 +228,7 @@ if [ -f "${MATCHZY_CFG}" ]; then
         log "MatchZy whitelist enforcement enabled"
     else
         sed -i 's|^matchzy_kick_when_no_match_loaded.*|matchzy_kick_when_no_match_loaded true|' "${MATCHZY_CFG}"
-        sed -i 's|^matchzy_whitelist_enabled_default.*|matchzy_whitelist_enabled_default true|' "${MATCHZY_CFG}"
+        sed -i 's|^matchzy_whitelist_enabled_default.*|matchzy_whitelist_enabled_default false|' "${MATCHZY_CFG}"
     fi
 fi
 
@@ -253,8 +253,8 @@ export LD_LIBRARY_PATH="${CS2_DIR}/game/bin/linuxsteamrt64:${LD_LIBRARY_PATH}"
 chown -R steam:steam /instance/data 2>/dev/null || true
 chown -R steam:steam /demos 2>/dev/null || true
 
-CS2_TICKRATE="${CS2_TICKRATE:-128}"
-log "Tickrate: ${CS2_TICKRATE}"
+# CS2 uses sub-tick (fixed 64 tick); -tickrate is ignored but kept for compat
+CS2_TICKRATE="${CS2_TICKRATE:-64}"
 
 # ─── Steam socket port ──────────────────────────────────
 # CS2 uses a separate UDP socket for Steam master registration / client auth
