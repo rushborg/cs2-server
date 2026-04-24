@@ -117,6 +117,19 @@ var allowedCommands = map[string]bool{
 	"validate_base":       true,
 }
 
+// Тихие команды — read-only поллинг от admin UI или backend keepalive.
+// Не пишем их успешные вызовы в лог, иначе лог становится бесполезным
+// (см. screenshot — каждые 2-5 секунд UI дергает get_agent_logs +
+// get_status + query_server, и реальные события тонут).
+// Ошибки и паники таких команд всё равно логируются.
+var quietCommands = map[string]bool{
+	"get_status":      true,
+	"get_logs":        true,
+	"get_agent_logs":  true,
+	"get_base_status": true,
+	"query_server":    true,
+}
+
 type GetLogsPayload struct {
 	Port int `json:"port"`
 	Tail int `json:"tail"`
@@ -697,7 +710,15 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result
 		return nil, fmt.Errorf("rejected unknown command: %s", cmdType)
 	}
 
-	fmt.Printf("[agent] ▶ command received: %s (%d bytes payload)\n", cmdType, len(payload))
+	// Тихие команды — это polling-чтения (admin UI дергает их каждые
+	// 2-5 сек). Без фильтрации они забивают лог и тонут реальные
+	// события (update_base, deploy_server, ошибки и т.п.).  Печатаем
+	// только ошибки/паники для них, успешные ответы молча.
+	quiet := quietCommands[cmdType]
+
+	if !quiet {
+		fmt.Printf("[agent] ▶ command received: %s (%d bytes payload)\n", cmdType, len(payload))
+	}
 	startedAt := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
@@ -705,7 +726,7 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result
 			err = fmt.Errorf("panic in %s: %v", cmdType, r)
 		} else if err != nil {
 			fmt.Printf("[agent] ✖ command %s failed after %s: %v\n", cmdType, time.Since(startedAt), err)
-		} else {
+		} else if !quiet {
 			fmt.Printf("[agent] ✓ command %s ok in %s\n", cmdType, time.Since(startedAt))
 		}
 	}()
