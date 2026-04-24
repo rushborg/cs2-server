@@ -100,6 +100,7 @@ var allowedCommands = map[string]bool{
 	"restart_server":      true,
 	"setup_base":          true,
 	"update_base":         true,
+	"reinstall_base":      true,
 	"update_image":        true,
 	"update_agent":        true,
 	"sync_admins":         true,
@@ -544,6 +545,28 @@ func copyFile(src, dst string) error {
 // Retries up to 5 times. Critically — checks SteamCMD output for failure markers
 // (e.g. "Error! App '730' state is 0x602") instead of only checking if the binary
 // exists, because a partial/corrupt install can leave the binary behind.
+// stateErrorRe ловит SteamCMD ответы вида "Error! App '730' state is 0xN ..."
+// Любой такой код после нескольких попыток означает что локальное состояние
+// сломано (manifest/depot mismatch) — пора wipe'ать и ставить заново.
+var stateErrorRe = regexp.MustCompile(`Error! App '730' state is 0x([0-9a-fA-F]+)`)
+
+// wipeCS2Base сносит всё содержимое cs2-base сохраняя сам каталог
+// (чтобы права/владение не сбросились). Используется при auto-fallback
+// и явной команде reinstall_base.
+func wipeCS2Base(baseDir string) error {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return fmt.Errorf("read cs2-base: %w", err)
+	}
+	for _, e := range entries {
+		p := filepath.Join(baseDir, e.Name())
+		if err := os.RemoveAll(p); err != nil {
+			return fmt.Errorf("remove %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
 func downloadCS2ViaSteamCMD(baseDir string) error {
 	steamcmdPath := "/usr/games/steamcmd"
 	if _, err := os.Stat(steamcmdPath); os.IsNotExist(err) {
@@ -561,6 +584,10 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 	var totalDownloaded int64
 	finalResult := "error"
 	finalErrMsg := ""
+	// Счётчик последовательных state-ошибок (0x6 / 0x20006 / etc).
+	// После 2 подряд auto-wipe и пересборка с нуля.
+	consecutiveStateErrors := 0
+	wipedAlready := false
 
 	for attempt := 1; attempt <= 5; attempt++ {
 		fmt.Printf("[agent] SteamCMD CS2 install attempt %d/5 into %s\n", attempt, baseDir)
@@ -591,14 +618,35 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 			lastErr = fmt.Errorf("steamcmd reported app 730 error (see log above)")
 			finalErrMsg = extractSteamcmdError(output)
 			fmt.Printf("[agent] SteamCMD attempt %d: detected app 730 error, will retry\n", attempt)
+
+			// Auto-wipe: если 2 попытки подряд возвращают state error
+			// (типа 0x6, 0x20006 — рассыпавшийся manifest), значит
+			// in-place update не починит. Сносим всё и ставим с нуля.
+			if stateErrorRe.MatchString(output) {
+				consecutiveStateErrors++
+			} else {
+				consecutiveStateErrors = 0
+			}
+			if consecutiveStateErrors >= 2 && !wipedAlready {
+				fmt.Printf("[agent] SteamCMD: 2 consecutive state errors — auto-wiping cs2-base and reinstalling from scratch\n")
+				if werr := wipeCS2Base(baseDir); werr != nil {
+					fmt.Printf("[agent] auto-wipe failed: %v\n", werr)
+				} else {
+					wipedAlready = true
+					consecutiveStateErrors = 0
+					fmt.Printf("[agent] cs2-base wiped, next SteamCMD run will do a fresh install\n")
+				}
+			}
 		} else if runErr != nil {
 			lastErr = fmt.Errorf("steamcmd exit: %w", runErr)
 			finalErrMsg = runErr.Error()
 			fmt.Printf("[agent] SteamCMD attempt %d: exit error: %v\n", attempt, runErr)
+			consecutiveStateErrors = 0
 		} else if _, err := os.Stat(cs2Binary); err != nil {
 			lastErr = fmt.Errorf("cs2 binary missing after steamcmd: %w", err)
 			finalErrMsg = "cs2 binary missing"
 			fmt.Printf("[agent] SteamCMD attempt %d: binary missing at %s\n", attempt, cs2Binary)
+			consecutiveStateErrors = 0
 		} else if strings.Contains(output, "Success! App '730' already up to date") {
 			fmt.Printf("[agent] SteamCMD attempt %d: already up to date\n", attempt)
 			finalResult = "up_to_date"
@@ -765,6 +813,9 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result
 
 	case "update_base":
 		return h.updateBase()
+
+	case "reinstall_base":
+		return h.reinstallBase()
 
 	case "update_agent":
 		var p UpdateAgentPayload
@@ -1451,6 +1502,62 @@ func (h *Handler) updateBase() (interface{}, error) {
 	}
 
 	return map[string]string{"status": "updated", "path": base}, nil
+}
+
+// reinstallBase сносит cs2-base начисто и переустанавливает CS2 через
+// SteamCMD. Используется когда in-place update_base не помогает (битый
+// manifest, повторяющиеся state errors). Это разрушительная операция,
+// все инстансы останавливаются на время, плагины потом ставятся заново
+// тем же путём что и при update_base.
+func (h *Handler) reinstallBase() (interface{}, error) {
+	instances, _ := h.listInstancePorts()
+	base := filepath.Join(h.DataDir, "cs2-base")
+
+	// 1. Stop all containers
+	for _, port := range instances {
+		h.stopServer(port)
+	}
+
+	// 2. Wipe cs2-base
+	fmt.Printf("[agent] reinstall_base: wiping %s\n", base)
+	if err := wipeCS2Base(base); err != nil {
+		return nil, fmt.Errorf("wipe cs2-base: %w", err)
+	}
+
+	// 3. Fresh SteamCMD install
+	if err := downloadCS2ViaSteamCMD(base); err != nil {
+		return nil, err
+	}
+
+	// 4. Plugin marker reset + plugin reinstall via temporary container
+	os.Remove(filepath.Join(base, "game", "csgo", "addons", ".rushborg-plugins-installed"))
+	exec.Command("docker", "rm", "-f", "cs2-base-setup").Run()
+	cmd := exec.Command("docker", "run", "--rm",
+		"--name", "cs2-base-setup",
+		"-v", base+":/home/steam/cs2-dedicated",
+		"-e", "CS2_PORT=0",
+		"--security-opt", "seccomp=unconfined",
+		"-e", "DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=0",
+		h.DockerImage,
+	)
+	cmd.CombinedOutput()
+
+	// 5. Recreate per-instance hardlinks from fresh base
+	for _, port := range instances {
+		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
+		os.RemoveAll(cs2Data) // полная пересборка — старые хардлинки на снесённые inode'ы бесполезны
+		if err := syncCs2DataFromBase(cs2Data, base, h.DockerImage); err != nil {
+			fmt.Printf("[agent] reinstall_base: sync instance %d failed: %v\n", port, err)
+		}
+	}
+
+	// 6. Restart all
+	for _, port := range instances {
+		dir := h.instanceDir(port)
+		h.runCompose(dir, "up", "-d")
+	}
+
+	return map[string]string{"status": "reinstalled", "path": base}, nil
 }
 
 // updateAgent downloads a new agent binary from GitHub Release and restarts.
