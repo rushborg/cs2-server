@@ -37,9 +37,9 @@ namespace RushBMatchTelemetry;
 public class RushBMatchTelemetry : BasePlugin
 {
     public override string ModuleName => "RushB Match Telemetry";
-    public override string ModuleVersion => "2.0.0";
+    public override string ModuleVersion => "3.0.0";
     public override string ModuleAuthor => "RUSH-B.ORG";
-    public override string ModuleDescription => "Forwards chat + live game events to RUSH-B.ORG webhook";
+    public override string ModuleDescription => "Forwards chat + live game events + weapon telemetry to RUSH-B.ORG webhook";
 
     private const int MessageMaxLength = 500;
 
@@ -49,6 +49,25 @@ public class RushBMatchTelemetry : BasePlugin
     {
         Timeout = TimeSpan.FromSeconds(3),
     };
+
+    // ─── Per-round weapon aggregation (Phase 3) ─────────────
+    // EventWeaponFire + EventPlayerHurt шумные (сотни событий в раунд),
+    // поэтому агрегируем локально и шлём один POST на round_end.
+    // Всё в main-thread (CSS вызывает все хуки синхронно), без блокировок.
+    private sealed class WeaponAgg
+    {
+        public int ShotsFired;
+        public int Hits;
+        public int Damage;
+        public int HitHead;
+        public int HitChest;
+        public int HitStomach;
+        public int HitArms;
+        public int HitLegs;
+    }
+
+    // steamid -> weapon -> aggregated counters (current round only)
+    private readonly Dictionary<ulong, Dictionary<string, WeaponAgg>> _roundAgg = new();
 
     // ─── Lifecycle ───────────────────────────────────────────
 
@@ -67,6 +86,10 @@ public class RushBMatchTelemetry : BasePlugin
         RegisterEventHandler<EventBombDefused>(OnBombDefused);
         RegisterEventHandler<EventBombExploded>(OnBombExploded);
         RegisterEventHandler<EventRoundMvp>(OnRoundMvp);
+
+        // Weapon telemetry (Phase 3) — aggregated, not per-event
+        RegisterEventHandler<EventWeaponFire>(OnWeaponFire);
+        RegisterEventHandler<EventPlayerHurt>(OnPlayerHurt);
     }
 
     // ─── Chat hooks ──────────────────────────────────────────
@@ -214,13 +237,14 @@ public class RushBMatchTelemetry : BasePlugin
 
     private HookResult OnRoundEnd(EventRoundEnd ev, GameEventInfo info)
     {
+        int round = GetCurrentRound();
         try
         {
             var payload = Json(new
             {
                 @event = "live_round_end",
                 matchid = GetMatchId(),
-                round_number = GetCurrentRound(),
+                round_number = round,
                 time = Server.CurrentTime,
                 reason = ev.Reason,    // CS2 enum: 1=TargetBombed, 7=CTWin, 8=TWin, 9=Defused, 10=Timeout, 16=Eliminated
                 winner = ev.Winner,    // team num: 2=T, 3=CT
@@ -232,6 +256,10 @@ public class RushBMatchTelemetry : BasePlugin
         {
             Console.WriteLine($"[RushB-Telemetry] round_end error: {ex.GetType().Name}");
         }
+        // Flush accumulated weapon stats AFTER round_end marker (так бэкенд
+        // получит сначала границу раунда, потом его итог по оружию).
+        // FlushWeaponStats сам ловит свои исключения.
+        FlushWeaponStats(round);
         return HookResult.Continue;
     }
 
@@ -328,6 +356,116 @@ public class RushBMatchTelemetry : BasePlugin
             Console.WriteLine($"[RushB-Telemetry] round_mvp error: {ex.GetType().Name}");
         }
         return HookResult.Continue;
+    }
+
+    // ─── Weapon telemetry hooks (Phase 3) ────────────────────
+    // Обе функции — hot path (сотни вызовов за раунд). Только lookup в
+    // Dictionary + инкремент, никакого сериализации/JSON/HTTP здесь.
+    // Flush батча делается в OnRoundEnd.
+
+    private HookResult OnWeaponFire(EventWeaponFire ev, GameEventInfo info)
+    {
+        try
+        {
+            var p = ev.Userid;
+            if (p is null || !p.IsValid || p.IsBot || p.IsHLTV) return HookResult.Continue;
+            GetAgg(p.SteamID, ev.Weapon ?? "").ShotsFired++;
+        }
+        catch
+        {
+            // Игнорируем — нельзя ронять hot path
+        }
+        return HookResult.Continue;
+    }
+
+    private HookResult OnPlayerHurt(EventPlayerHurt ev, GameEventInfo info)
+    {
+        try
+        {
+            var attacker = ev.Attacker;
+            var victim = ev.Userid;
+            if (attacker is null || !attacker.IsValid || attacker.IsBot || attacker.IsHLTV) return HookResult.Continue;
+            if (victim is null || !victim.IsValid) return HookResult.Continue;
+            // Self-damage (HE себе под ноги, falldamage) не считаем в точность
+            if (attacker.SteamID == victim.SteamID) return HookResult.Continue;
+
+            var agg = GetAgg(attacker.SteamID, ev.Weapon ?? "");
+            agg.Hits++;
+            agg.Damage += ev.DmgHealth;
+            switch (ev.Hitgroup)
+            {
+                case 1: agg.HitHead++; break;      // head
+                case 2: agg.HitChest++; break;     // chest
+                case 3: agg.HitStomach++; break;   // stomach
+                case 4: case 5: agg.HitArms++; break;  // l/r arm
+                case 6: case 7: agg.HitLegs++; break;  // l/r leg
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+        return HookResult.Continue;
+    }
+
+    private WeaponAgg GetAgg(ulong steamId, string weapon)
+    {
+        if (!_roundAgg.TryGetValue(steamId, out var byWeapon))
+        {
+            byWeapon = new Dictionary<string, WeaponAgg>();
+            _roundAgg[steamId] = byWeapon;
+        }
+        if (!byWeapon.TryGetValue(weapon, out var agg))
+        {
+            agg = new WeaponAgg();
+            byWeapon[weapon] = agg;
+        }
+        return agg;
+    }
+
+    private void FlushWeaponStats(int round)
+    {
+        if (_roundAgg.Count == 0) return;
+        try
+        {
+            var entries = new List<object>();
+            foreach (var (sid, byWeapon) in _roundAgg)
+            {
+                foreach (var (weapon, a) in byWeapon)
+                {
+                    entries.Add(new
+                    {
+                        steamid = sid.ToString(),
+                        weapon,
+                        shots_fired = a.ShotsFired,
+                        hits = a.Hits,
+                        damage = a.Damage,
+                        hit_head = a.HitHead,
+                        hit_chest = a.HitChest,
+                        hit_stomach = a.HitStomach,
+                        hit_arms = a.HitArms,
+                        hit_legs = a.HitLegs,
+                    });
+                }
+            }
+            var payload = Json(new
+            {
+                @event = "live_weapon_stats",
+                matchid = GetMatchId(),
+                round_number = round,
+                time = Server.CurrentTime,
+                entries,
+            });
+            Fire(payload);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RushB-Telemetry] flush_weapon error: {ex.GetType().Name}");
+        }
+        finally
+        {
+            _roundAgg.Clear();
+        }
     }
 
     // ─── HTTP transport ──────────────────────────────────────
