@@ -164,18 +164,18 @@ if [ -d "${CSGO_DIR}/addons/counterstrikesharp/plugins/MatchZy" ] && [ -f /rushb
     log "MatchZy Russian translation installed"
 fi
 
-# ─── RushBChatForwarder plugin ──────────────────────────
+# ─── RushBMatchTelemetry plugin ──────────────────────────
 # Copies our pre-built DLL into the CSS plugins dir so CSSharp auto-loads
 # it on server start. CSS scans addons/counterstrikesharp/plugins/<Name>/
 # for a DLL matching the folder name.
 if [ -d "${CSGO_DIR}/addons/counterstrikesharp/plugins" ] && \
-   [ -f /rushborg-plugins/RushBChatForwarder/RushBChatForwarder.dll ]; then
-    RUSHB_CHAT_DIR="${CSGO_DIR}/addons/counterstrikesharp/plugins/RushBChatForwarder"
+   [ -f /rushborg-plugins/RushBMatchTelemetry/RushBMatchTelemetry.dll ]; then
+    RUSHB_CHAT_DIR="${CSGO_DIR}/addons/counterstrikesharp/plugins/RushBMatchTelemetry"
     mkdir -p "${RUSHB_CHAT_DIR}"
     cp --remove-destination \
-        /rushborg-plugins/RushBChatForwarder/RushBChatForwarder.dll \
-        "${RUSHB_CHAT_DIR}/RushBChatForwarder.dll"
-    log "RushBChatForwarder plugin installed"
+        /rushborg-plugins/RushBMatchTelemetry/RushBMatchTelemetry.dll \
+        "${RUSHB_CHAT_DIR}/RushBMatchTelemetry.dll"
+    log "RushBMatchTelemetry plugin installed"
 fi
 
 # ─── CSSharp log file ───────────────────────────────────

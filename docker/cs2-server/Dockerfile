@@ -1,4 +1,4 @@
-# ─── Stage 1: build the RushBChatForwarder CSSharp plugin ───────────────
+# ─── Stage 1: build the RushBMatchTelemetry CSSharp plugin ───────────────
 #
 # We compile against the same CounterStrikeSharp API version that
 # entrypoint.sh downloads into the container (see CSSHARP_URL). Only the
@@ -7,7 +7,7 @@
 # them and break CSS internals.
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS plugin-builder
 WORKDIR /src
-COPY plugins/RushBChatForwarder/ .
+COPY plugins/RushBMatchTelemetry/ .
 RUN dotnet restore && \
     dotnet publish -c Release -o /out --no-self-contained
 
@@ -28,7 +28,7 @@ VOLUME ["/home/steam/cs2-dedicated", "/instance/config", "/instance/data", "/sha
 
 COPY entrypoint.sh /rushborg-entrypoint.sh
 COPY lang_ru.json /rushborg-lang_ru.json
-COPY --from=plugin-builder /out/RushBChatForwarder.dll /rushborg-plugins/RushBChatForwarder/RushBChatForwarder.dll
+COPY --from=plugin-builder /out/RushBMatchTelemetry.dll /rushborg-plugins/RushBMatchTelemetry/RushBMatchTelemetry.dll
 RUN chmod +x /rushborg-entrypoint.sh
 
 ENTRYPOINT ["/rushborg-entrypoint.sh"]

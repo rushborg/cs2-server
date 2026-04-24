@@ -4,8 +4,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>RushBChatForwarder</RootNamespace>
-    <AssemblyName>RushBChatForwarder</AssemblyName>
+    <RootNamespace>RushBMatchTelemetry</RootNamespace>
+    <AssemblyName>RushBMatchTelemetry</AssemblyName>
     <OutputType>Library</OutputType>
     <!-- Do not ship CSS API DLLs — server already has them. -->
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
