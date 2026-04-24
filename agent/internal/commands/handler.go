@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,6 +162,40 @@ var (
 	steamcmdProgressMu sync.Mutex
 	steamcmdProgressCur *SteamCMDProgress
 )
+
+// LastSteamCMDResult — что произошло в последний запуск SteamCMD.
+// Используется UI для показа осмысленного статуса: "уже актуальная",
+// "скачано N МБ", "ошибка 0x20006" — вместо туманного "(нет обновлений)".
+type LastSteamCMDResult struct {
+	StartedAt       time.Time `json:"started_at"`
+	FinishedAt      time.Time `json:"finished_at"`
+	DurationSec     int64     `json:"duration_sec"`
+	Result          string    `json:"result"`           // "up_to_date" | "downloaded" | "error"
+	BytesDownloaded int64     `json:"bytes_downloaded"`
+	ErrorMessage    string    `json:"error_message,omitempty"`
+}
+
+var (
+	lastSteamCMDMu  sync.Mutex
+	lastSteamCMDCur *LastSteamCMDResult
+)
+
+func setLastSteamCMDResult(r LastSteamCMDResult) {
+	lastSteamCMDMu.Lock()
+	cp := r
+	lastSteamCMDCur = &cp
+	lastSteamCMDMu.Unlock()
+}
+
+func getLastSteamCMDResult() *LastSteamCMDResult {
+	lastSteamCMDMu.Lock()
+	defer lastSteamCMDMu.Unlock()
+	if lastSteamCMDCur == nil {
+		return nil
+	}
+	cp := *lastSteamCMDCur
+	return &cp
+}
 
 func setSteamcmdProgress(p SteamCMDProgress) {
 	steamcmdProgressMu.Lock()
@@ -502,12 +537,17 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 		return fmt.Errorf("steamcmd not found at %s — run bootstrap script to install", steamcmdPath)
 	}
 
+	startedAt := time.Now()
 	// Reset and clear shared progress on exit so the admin UI stops showing it.
-	setSteamcmdProgress(SteamCMDProgress{Active: true, State: "starting", UpdatedAt: time.Now()})
+	setSteamcmdProgress(SteamCMDProgress{Active: true, State: "starting", UpdatedAt: startedAt})
 	defer clearSteamcmdProgress()
 
 	cs2Binary := filepath.Join(baseDir, "game", "bin", "linuxsteamrt64", "cs2")
 	var lastErr error
+	// Сколько байт стянулось (агрегируем из progress writer'а)
+	var totalDownloaded int64
+	finalResult := "error"
+	finalErrMsg := ""
 
 	for attempt := 1; attempt <= 5; attempt++ {
 		fmt.Printf("[agent] SteamCMD CS2 install attempt %d/5 into %s\n", attempt, baseDir)
@@ -527,21 +567,50 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 		runErr := cmd.Run()
 		output := buf.String()
 
+		// Извлекаем итоговый объём для repor'а в lastSteamCMDResult.
+		if prog := getSteamcmdProgress(); prog != nil && prog.Total > 0 {
+			totalDownloaded = prog.Current
+		}
+
 		// Detect SteamCMD "Error! App '730' state is 0x..." markers. Any such line means
 		// the install is broken even if the cs2 binary happens to exist from a prior run.
 		if strings.Contains(output, "Error! App '730'") || strings.Contains(output, "Error! App \"730\"") {
 			lastErr = fmt.Errorf("steamcmd reported app 730 error (see log above)")
+			finalErrMsg = extractSteamcmdError(output)
 			fmt.Printf("[agent] SteamCMD attempt %d: detected app 730 error, will retry\n", attempt)
 		} else if runErr != nil {
 			lastErr = fmt.Errorf("steamcmd exit: %w", runErr)
+			finalErrMsg = runErr.Error()
 			fmt.Printf("[agent] SteamCMD attempt %d: exit error: %v\n", attempt, runErr)
 		} else if _, err := os.Stat(cs2Binary); err != nil {
 			lastErr = fmt.Errorf("cs2 binary missing after steamcmd: %w", err)
+			finalErrMsg = "cs2 binary missing"
 			fmt.Printf("[agent] SteamCMD attempt %d: binary missing at %s\n", attempt, cs2Binary)
+		} else if strings.Contains(output, "Success! App '730' already up to date") {
+			fmt.Printf("[agent] SteamCMD attempt %d: already up to date\n", attempt)
+			finalResult = "up_to_date"
+			setLastSteamCMDResult(LastSteamCMDResult{
+				StartedAt:       startedAt,
+				FinishedAt:      time.Now(),
+				DurationSec:     int64(time.Since(startedAt).Seconds()),
+				Result:          finalResult,
+				BytesDownloaded: 0,
+			})
+			if err := stageSteamclientSO(baseDir); err != nil {
+				fmt.Printf("[agent] WARN: failed to stage steamclient.so into %s: %v\n", baseDir, err)
+			}
+			return nil
 		} else if strings.Contains(output, "Success! App '730' fully installed") ||
-			strings.Contains(output, "Success! App '730' already up to date") ||
 			strings.Contains(output, "fully installed.") {
 			fmt.Printf("[agent] SteamCMD attempt %d: success\n", attempt)
+			finalResult = "downloaded"
+			setLastSteamCMDResult(LastSteamCMDResult{
+				StartedAt:       startedAt,
+				FinishedAt:      time.Now(),
+				DurationSec:     int64(time.Since(startedAt).Seconds()),
+				Result:          finalResult,
+				BytesDownloaded: totalDownloaded,
+			})
 			if err := stageSteamclientSO(baseDir); err != nil {
 				fmt.Printf("[agent] WARN: failed to stage steamclient.so into %s: %v\n", baseDir, err)
 			}
@@ -549,6 +618,14 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 		} else {
 			// Binary exists and no explicit error — accept with a warning
 			fmt.Printf("[agent] SteamCMD attempt %d: binary exists, no success marker — accepting\n", attempt)
+			finalResult = "downloaded"
+			setLastSteamCMDResult(LastSteamCMDResult{
+				StartedAt:       startedAt,
+				FinishedAt:      time.Now(),
+				DurationSec:     int64(time.Since(startedAt).Seconds()),
+				Result:          finalResult,
+				BytesDownloaded: totalDownloaded,
+			})
 			if err := stageSteamclientSO(baseDir); err != nil {
 				fmt.Printf("[agent] WARN: failed to stage steamclient.so into %s: %v\n", baseDir, err)
 			}
@@ -564,7 +641,54 @@ func downloadCS2ViaSteamCMD(baseDir string) error {
 	if lastErr == nil {
 		lastErr = fmt.Errorf("steamcmd failed after 5 attempts")
 	}
+	if finalErrMsg == "" {
+		finalErrMsg = lastErr.Error()
+	}
+	setLastSteamCMDResult(LastSteamCMDResult{
+		StartedAt:    startedAt,
+		FinishedAt:   time.Now(),
+		DurationSec:  int64(time.Since(startedAt).Seconds()),
+		Result:       "error",
+		ErrorMessage: finalErrMsg,
+	})
 	return fmt.Errorf("failed to install CS2 via steamcmd: %w", lastErr)
+}
+
+// extractSteamcmdError finds the most recent "Error! App '730'..." line in
+// SteamCMD output for surfacing to the admin UI. Trims to one line, max 200 chars.
+func extractSteamcmdError(output string) string {
+	lines := strings.Split(output, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if strings.Contains(l, "Error! App") {
+			if len(l) > 200 {
+				l = l[:200]
+			}
+			return l
+		}
+	}
+	return ""
+}
+
+// parseAppManifest reads steamapps/appmanifest_730.acf and returns the
+// key/value map of the AppState block. Empty map on error.  The format
+// is Valve KeyValues nested but we only need flat top-level fields like
+// buildid, LastUpdated, name — a single regex captures them.
+func parseAppManifest(baseDir string) map[string]string {
+	p := filepath.Join(baseDir, "steamapps", "appmanifest_730.acf")
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return map[string]string{}
+	}
+	out := map[string]string{}
+	re := regexp.MustCompile(`"(\w+)"\s+"([^"]*)"`)
+	for _, m := range re.FindAllStringSubmatch(string(data), -1) {
+		// First occurrence wins — top-level fields appear before nested blocks.
+		if _, ok := out[m[1]]; !ok {
+			out[m[1]] = m[2]
+		}
+	}
+	return out
 }
 
 func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result interface{}, err error) {
@@ -1411,15 +1535,51 @@ func (h *Handler) getBaseStatus() (interface{}, error) {
 			}
 		}
 
-		// Check for version file or game info
+		// Парсим steam.inf — это game-internal версия, удобная для пользователя
+		// (типа "1.41.5.4"). Также берём ServerVersion (e.g. 2000797) для
+		// сравнения через Steam UpToDateCheck API.
 		versionFile := filepath.Join(base, "game", "csgo", "steam.inf")
 		if data, err := os.ReadFile(versionFile); err == nil {
 			for _, line := range strings.Split(string(data), "\n") {
 				if strings.HasPrefix(line, "PatchVersion=") {
 					result["version"] = strings.TrimPrefix(line, "PatchVersion=")
-					break
+				} else if strings.HasPrefix(line, "ServerVersion=") {
+					result["server_version"] = strings.TrimPrefix(line, "ServerVersion=")
 				}
 			}
+		}
+
+		// Парсим appmanifest — там Steam buildid (типа 22627914) который
+		// гораздо стабильнее для сравнения с api.steamcmd.net public
+		// branch.  LastUpdated — unix timestamp последнего успешного
+		// SteamCMD update_app.
+		if mf := parseAppManifest(base); len(mf) > 0 {
+			if v := mf["buildid"]; v != "" {
+				result["build_id"] = v
+			}
+			if v := mf["LastUpdated"]; v != "" {
+				if ts, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+					result["manifest_updated_at"] = time.Unix(ts, 0).UTC().Format(time.RFC3339)
+				}
+			}
+			if v := mf["StateFlags"]; v != "" {
+				result["state_flags"] = v
+			}
+		}
+	}
+
+	// Прикрепляем результат последнего SteamCMD-запуска — он даёт UI
+	// настоящий статус «уже актуальная» / «скачано» / «ошибка», вместо
+	// угадайки по флагу active=false.
+	if last := getLastSteamCMDResult(); last != nil {
+		result["last_steamcmd"] = map[string]interface{}{
+			"started_at":       last.StartedAt.UTC().Format(time.RFC3339),
+			"finished_at":      last.FinishedAt.UTC().Format(time.RFC3339),
+			"duration_sec":     last.DurationSec,
+			"result":           last.Result,
+			"bytes_downloaded": last.BytesDownloaded,
+			"bytes_human":      humanBytes(last.BytesDownloaded),
+			"error_message":    last.ErrorMessage,
 		}
 	}
 
