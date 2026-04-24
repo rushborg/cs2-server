@@ -1,0 +1,12 @@
+/src/bin/Release/net8.0/RushBMatchTelemetry.deps.json
+/src/bin/Release/net8.0/RushBMatchTelemetry.dll
+/src/bin/Release/net8.0/RushBMatchTelemetry.pdb
+/src/obj/Release/net8.0/RushBMatchTelemetry.csproj.AssemblyReference.cache
+/src/obj/Release/net8.0/RushBMatchTelemetry.GeneratedMSBuildEditorConfig.editorconfig
+/src/obj/Release/net8.0/RushBMatchTelemetry.AssemblyInfoInputs.cache
+/src/obj/Release/net8.0/RushBMatchTelemetry.AssemblyInfo.cs
+/src/obj/Release/net8.0/RushBMatchTelemetry.csproj.CoreCompileInputs.cache
+/src/obj/Release/net8.0/RushBMatchTelemetry.dll
+/src/obj/Release/net8.0/refint/RushBMatchTelemetry.dll
+/src/obj/Release/net8.0/RushBMatchTelemetry.pdb
+/src/obj/Release/net8.0/ref/RushBMatchTelemetry.dll

@@ -133,6 +133,11 @@ public class RushBMatchTelemetry : BasePlugin
             var victim = ev.Userid;
             if (victim is null || !victim.IsValid) return HookResult.Continue;
 
+            bool attackerValid = attacker is { IsValid: true };
+            bool isSuicide = !attackerValid || attacker!.SteamID == victim.SteamID;
+            // Teamkill: обе стороны валидны, разные игроки, одна команда.
+            bool isTeamKill = attackerValid && !isSuicide && attacker!.TeamNum == victim.TeamNum;
+
             var payload = Json(new
             {
                 @event = "live_kill",
@@ -142,9 +147,9 @@ public class RushBMatchTelemetry : BasePlugin
                 victim_steamid = victim.SteamID.ToString(),
                 victim_name = victim.PlayerName ?? string.Empty,
                 victim_team = SideFromTeamNum(victim.TeamNum),
-                attacker_steamid = attacker is { IsValid: true } ? attacker.SteamID.ToString() : string.Empty,
-                attacker_name = attacker is { IsValid: true } ? attacker.PlayerName ?? string.Empty : string.Empty,
-                attacker_team = attacker is { IsValid: true } ? SideFromTeamNum(attacker.TeamNum) : string.Empty,
+                attacker_steamid = attackerValid ? attacker!.SteamID.ToString() : string.Empty,
+                attacker_name = attackerValid ? attacker!.PlayerName ?? string.Empty : string.Empty,
+                attacker_team = attackerValid ? SideFromTeamNum(attacker!.TeamNum) : string.Empty,
                 assister_steamid = ev.Assister is { IsValid: true } ? ev.Assister.SteamID.ToString() : string.Empty,
                 weapon = ev.Weapon ?? string.Empty,
                 headshot = ev.Headshot,
@@ -154,6 +159,8 @@ public class RushBMatchTelemetry : BasePlugin
                 attacker_blind = ev.Attackerblind,
                 distance = ev.Distance,
                 assisted_flash = ev.Assistedflash,
+                is_suicide = isSuicide,
+                is_teamkill = isTeamKill,
             });
             Fire(payload);
         }
@@ -329,8 +336,14 @@ public class RushBMatchTelemetry : BasePlugin
     {
         var url = ConVar.Find("rushborg_chat_webhook_url")?.StringValue;
         var auth = ConVar.Find("rushborg_chat_webhook_auth")?.StringValue;
+        var matchId = ConVar.Find("rushborg_match_id")?.StringValue;
 
-        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(auth))
+        // matchid=empty означает либо прогрев перед загрузкой матча, либо
+        // idle сервер. В обоих случаях события никому не нужны — экономим
+        // HTTP и не засоряем raw-архив бэкенда.
+        if (string.IsNullOrWhiteSpace(url) ||
+            string.IsNullOrWhiteSpace(auth) ||
+            string.IsNullOrWhiteSpace(matchId))
             return;
 
         _ = SendAsync(url!, auth!, payload);
