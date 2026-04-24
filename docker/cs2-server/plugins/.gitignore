@@ -1,0 +1,5 @@
+# .NET build artefacts — плагин компилится в Docker multi-stage,
+# артефакты не должны попадать в коммит.
+bin/
+obj/
+*.user
