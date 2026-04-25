@@ -146,6 +146,16 @@ type RCONPayload struct {
 	Command  string `json:"command"`
 }
 
+// UpdateBasePayload — параметры команды update_base.
+// SkipPorts — порты инстансов которые НЕ нужно останавливать/ресинкать.
+// Используется для активных матчей: SteamCMD обновит cs2-base в общем,
+// но запущенные контейнеры продолжат работу со старыми inode'ами файлов
+// (Linux atomic rename → fd остаются валидными). После окончания матча
+// очередной деплой инстанса подхватит свежие файлы из обновлённой cs2-base.
+type UpdateBasePayload struct {
+	SkipPorts []int `json:"skip_ports"`
+}
+
 // Max concurrent containers per host
 const maxContainers = 20
 
@@ -812,7 +822,11 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result
 		return h.setupBase()
 
 	case "update_base":
-		return h.updateBase()
+		var p UpdateBasePayload
+		if len(payload) > 0 {
+			json.Unmarshal(payload, &p)
+		}
+		return h.updateBase(p)
 
 	case "reinstall_base":
 		return h.reinstallBase()
@@ -1455,16 +1469,41 @@ func (h *Handler) setupBase() (interface{}, error) {
 }
 
 // updateBase stops all servers, updates CS2 base via SteamCMD, reinstalls plugins, restarts.
-func (h *Handler) updateBase() (interface{}, error) {
+func (h *Handler) updateBase(p UpdateBasePayload) (interface{}, error) {
 	instances, _ := h.listInstancePorts()
 	base := filepath.Join(h.DataDir, "cs2-base")
 
-	// 1. Stop all containers
+	// Skip set — ports которые нельзя трогать (активные матчи).
+	skip := make(map[int]bool, len(p.SkipPorts))
+	for _, port := range p.SkipPorts {
+		skip[port] = true
+	}
+
+	// affectedPorts — те которые мы реально стопаем/ресинкаем/рестартим.
+	affectedPorts := make([]int, 0, len(instances))
 	for _, port := range instances {
+		if !skip[port] {
+			affectedPorts = append(affectedPorts, port)
+		}
+	}
+	skippedPorts := make([]int, 0, len(skip))
+	for port := range skip {
+		skippedPorts = append(skippedPorts, port)
+	}
+
+	if len(skippedPorts) > 0 {
+		fmt.Printf("[agent] update_base: SKIPPING %v (active matches), updating %v\n",
+			skippedPorts, affectedPorts)
+	}
+
+	// 1. Stop ONLY non-skipped containers
+	for _, port := range affectedPorts {
 		h.stopServer(port)
 	}
 
-	// 2. Update CS2 via SteamCMD (validate re-downloads changed files)
+	// 2. Update CS2 via SteamCMD. Запущенные skip'нутые контейнеры
+	// держат старые inode'ы открытыми — atomic rename steamcmd создаёт
+	// новые inode'ы в cs2-base, активные матчи продолжают на старых.
 	if err := downloadCS2ViaSteamCMD(base); err != nil {
 		return nil, err
 	}
@@ -1484,24 +1523,30 @@ func (h *Handler) updateBase() (interface{}, error) {
 	)
 	cmd.CombinedOutput() // exits when CS2 tries to bind port 0
 
-	// 5. Recreate per-instance hardlink copies from updated base. Force a
-	// full rebuild by removing the marker first, so the helper always
-	// reruns the copy (base has new files).
-	for _, port := range instances {
+	// 5. Resync cs2-data ТОЛЬКО для затронутых инстансов. Активные матчи
+	// продолжают работу со старыми хардлинками; после окончания матча
+	// очередной deploy/redeploy ресинкнет их с обновлённой cs2-base
+	// (entrypoint увидит отсутствие маркера и сам всё сделает).
+	for _, port := range affectedPorts {
 		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
 		os.Remove(filepath.Join(cs2Data, ".rushborg-cs2-ready"))
 		if err := syncCs2DataFromBase(cs2Data, base, h.DockerImage); err != nil {
-			fmt.Printf("[agent] force-update: sync instance %d failed: %v\n", port, err)
+			fmt.Printf("[agent] update_base: sync instance %d failed: %v\n", port, err)
 		}
 	}
 
-	// 6. Restart all
-	for _, port := range instances {
+	// 6. Restart ONLY non-skipped instances
+	for _, port := range affectedPorts {
 		dir := h.instanceDir(port)
 		h.runCompose(dir, "up", "-d")
 	}
 
-	return map[string]string{"status": "updated", "path": base}, nil
+	return map[string]interface{}{
+		"status":   "updated",
+		"path":     base,
+		"updated":  affectedPorts,
+		"skipped":  skippedPorts,
+	}, nil
 }
 
 // reinstallBase сносит cs2-base начисто и переустанавливает CS2 через
