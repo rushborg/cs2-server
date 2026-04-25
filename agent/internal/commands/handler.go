@@ -1523,16 +1523,24 @@ func (h *Handler) updateBase(p UpdateBasePayload) (interface{}, error) {
 	)
 	cmd.CombinedOutput() // exits when CS2 tries to bind port 0
 
-	// 5. Resync cs2-data ТОЛЬКО для затронутых инстансов. Активные матчи
-	// продолжают работу со старыми хардлинками; после окончания матча
-	// очередной deploy/redeploy ресинкнет их с обновлённой cs2-base
-	// (entrypoint увидит отсутствие маркера и сам всё сделает).
+	// 5a. Resync cs2-data для затронутых инстансов (они стоплены, безопасно).
 	for _, port := range affectedPorts {
 		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
 		os.Remove(filepath.Join(cs2Data, ".rushborg-cs2-ready"))
 		if err := syncCs2DataFromBase(cs2Data, base, h.DockerImage); err != nil {
 			fmt.Printf("[agent] update_base: sync instance %d failed: %v\n", port, err)
 		}
+	}
+
+	// 5b. Для skipped (running с активным матчем): просто удаляем
+	// ready-маркер, не трогая сами файлы. Удаление файла одиночное и
+	// не влияет на работу запущенного CS2 (он держит свои fd открытыми).
+	// Когда матч закончится и контейнер перезапустится через redeploy
+	// — entrypoint увидит отсутствие маркера, сам ресинкает cs2-data
+	// со свежей cs2-base, и инстанс встанет на новый билд.
+	for _, port := range skippedPorts {
+		cs2Data := filepath.Join(h.instanceDir(port), "cs2-data")
+		os.Remove(filepath.Join(cs2Data, ".rushborg-cs2-ready"))
 	}
 
 	// 6. Restart ONLY non-skipped instances
