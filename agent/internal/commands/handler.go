@@ -2118,6 +2118,18 @@ func syncCs2DataFromBase(cs2DataDir, baseDir, dockerImage string) error {
 //     root on the host, which gives us a privilege-escalation path that
 //     doesn't require sudoers changes.
 func removeCs2DataTree(cs2DataDir, dockerImage string) error {
+	// Превентивная проверка owner'а: если cs2-data принадлежит другому
+	// uid (типовой случай — uid=1000 после chown -R steam:steam в
+	// контейнере), сразу идём в docker-as-root cleanup, не теряя время
+	// и логи на 50+ EPERM от os.RemoveAll и shell rm.
+	if info, err := os.Stat(cs2DataDir); err == nil {
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+			if int(stat.Uid) != os.Getuid() {
+				goto privilegedCleanup
+			}
+		}
+	}
+
 	// Fast path.
 	if err := os.RemoveAll(cs2DataDir); err == nil {
 		return nil
@@ -2132,6 +2144,8 @@ func removeCs2DataTree(cs2DataDir, dockerImage string) error {
 	} else {
 		fmt.Printf("[agent] shell rm -rf failed (%v, %s), trying docker-as-root cleanup\n", err, string(out))
 	}
+
+privilegedCleanup:
 
 	// Docker-as-root last resort.
 	if dockerImage == "" {
