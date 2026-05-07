@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorcon/rcon"
@@ -1107,22 +1108,71 @@ func (h *Handler) removeServer(port int) (interface{}, error) {
 }
 
 // ─── UFW firewall helpers ─────────────────────────────────
+//
+// ufw требует root. Агент работает не от root, поэтому делаем sudo -n
+// (non-interactive — без пароля). Если sudoers не настроен — silent
+// skip, не засоряем лог. Бутстрап-скрипт хоста может добавить:
+//
+//   echo 'rushborgsrv ALL=(root) NOPASSWD: /usr/sbin/ufw' > \
+//     /etc/sudoers.d/rushborg-agent
+//
+// Один раз проверяем доступность и кешируем результат, чтобы не
+// плодить sudo-вызовы при каждом deploy.
+
+var (
+	ufwOnce        sync.Once
+	ufwAvailable   bool
+	ufwSudoNeeded  bool
+)
+
+func ufwProbe() {
+	ufwOnce.Do(func() {
+		if _, err := exec.LookPath("ufw"); err != nil {
+			return // ufw не установлен — пропускаем тихо
+		}
+		// Прямой ufw status (если агент случайно root)
+		if err := exec.Command("ufw", "status").Run(); err == nil {
+			ufwAvailable = true
+			return
+		}
+		// sudo -n ufw status — есть ли passwordless sudoers entry
+		if err := exec.Command("sudo", "-n", "ufw", "status").Run(); err == nil {
+			ufwAvailable = true
+			ufwSudoNeeded = true
+			return
+		}
+		fmt.Println("[agent] ufw недоступен (нужен root или sudoers entry для rushborg-agent) — пропускаем автоматическое управление портами")
+	})
+}
+
+func runUFW(args ...string) ([]byte, error) {
+	ufwProbe()
+	if !ufwAvailable {
+		return nil, nil // silent skip
+	}
+	var cmd *exec.Cmd
+	if ufwSudoNeeded {
+		cmd = exec.Command("sudo", append([]string{"-n", "ufw"}, args...)...)
+	} else {
+		cmd = exec.Command("ufw", args...)
+	}
+	return cmd.CombinedOutput()
+}
 
 // ensureUFWPorts opens TCP+UDP for the game port and GOTV port.
 // Idempotent: ufw skip-adds if the rule already exists.
 func ensureUFWPorts(gamePort, gotvPort int) {
-	if _, err := exec.LookPath("ufw"); err != nil {
-		return // ufw not installed, skip
+	ufwProbe()
+	if !ufwAvailable {
+		return
 	}
 	ports := []int{gamePort, gotvPort}
 	for _, port := range ports {
 		for _, proto := range []string{"tcp", "udp"} {
 			rule := fmt.Sprintf("%d/%s", port, proto)
-			out, err := exec.Command("ufw", "allow", rule).CombinedOutput()
+			out, err := runUFW("allow", rule)
 			if err != nil {
 				fmt.Printf("[agent] ufw allow %s: %v (%s)\n", rule, err, strings.TrimSpace(string(out)))
-			} else {
-				fmt.Printf("[agent] ufw allow %s: ok\n", rule)
 			}
 		}
 	}
@@ -1130,16 +1180,16 @@ func ensureUFWPorts(gamePort, gotvPort int) {
 
 // closeUFWPorts removes firewall rules for a deleted server instance.
 func closeUFWPorts(gamePort, gotvPort int) {
-	if _, err := exec.LookPath("ufw"); err != nil {
+	ufwProbe()
+	if !ufwAvailable {
 		return
 	}
 	ports := []int{gamePort, gotvPort}
 	for _, port := range ports {
 		for _, proto := range []string{"tcp", "udp"} {
 			rule := fmt.Sprintf("%d/%s", port, proto)
-			out, err := exec.Command("ufw", "delete", "allow", rule).CombinedOutput()
-			if err != nil {
-				fmt.Printf("[agent] ufw delete allow %s: %v (%s)\n", rule, err, strings.TrimSpace(string(out)))
+			if _, err := runUFW("delete", "allow", rule); err != nil {
+				// удаление часто возвращает non-zero если правила нет — это норма
 			}
 		}
 	}
@@ -1501,6 +1551,23 @@ func (h *Handler) updateBase(p UpdateBasePayload) (interface{}, error) {
 		h.stopServer(port)
 	}
 
+	// Recovery guard: если что-то падёт ниже — поднимем все стопнутые
+	// контейнеры обратно (на старых файлах cs2-data), чтобы не оставить
+	// серверы лежащими. Очищаем флаг при штатном выходе.
+	successfulFinish := false
+	defer func() {
+		if successfulFinish {
+			return
+		}
+		fmt.Printf("[agent] update_base: recovery — поднимаю %v обратно после ошибки\n", affectedPorts)
+		for _, port := range affectedPorts {
+			dir := h.instanceDir(port)
+			if _, err := h.runCompose(dir, "up", "-d"); err != nil {
+				fmt.Printf("[agent] recovery: instance %d up failed: %v\n", port, err)
+			}
+		}
+	}()
+
 	// 2. Update CS2 via SteamCMD. Запущенные skip'нутые контейнеры
 	// держат старые inode'ы открытыми — atomic rename steamcmd создаёт
 	// новые inode'ы в cs2-base, активные матчи продолжают на старых.
@@ -1548,12 +1615,23 @@ func (h *Handler) updateBase(p UpdateBasePayload) (interface{}, error) {
 		dir := h.instanceDir(port)
 		h.runCompose(dir, "up", "-d")
 	}
+	successfulFinish = true
+
+	// Возвращаем свежий build_id из appmanifest — backend сразу запишет
+	// в host.cs2_build_id и снимет pendingBuildID если все хосты
+	// обновились. Без этого баннер «идёт обновление» висел до следующего
+	// 2-минутного poll'а агентов.
+	newBuildID := ""
+	if mf := parseAppManifest(base); mf != nil {
+		newBuildID = mf["buildid"]
+	}
 
 	return map[string]interface{}{
 		"status":   "updated",
 		"path":     base,
 		"updated":  affectedPorts,
 		"skipped":  skippedPorts,
+		"build_id": newBuildID,
 	}, nil
 }
 
@@ -1630,12 +1708,27 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 	tmpPath := "/tmp/rushborg-agent-new"
 	binPath := "/usr/local/bin/rushborg-agent"
 
-	// Download new binary (-L follows redirects for GitHub releases)
-	args := []string{"-fsSL", "--max-time", "120", "-o", tmpPath}
+	// Download new binary. -L follows redirects, --max-time 60 (раньше было
+	// 120 — но если сеть до GitHub сегодня лагает, бессмысленно ждать
+	// долго; auto-update тикер ходит каждые 6 часов, попробуем в следующий
+	// раз). --connect-timeout 10 — отдельный лимит для TCP handshake.
+	args := []string{
+		"-fsSL",
+		"--max-time", "60",
+		"--connect-timeout", "10",
+		"--retry", "2",
+		"--retry-delay", "3",
+		"-o", tmpPath,
+	}
 	args = append(args, downloadURL)
 	cmd := exec.Command("curl", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// curl exit 28 = timeout. Это сетевой глюк, не баг агента —
+		// возвращаем спецошибку чтобы caller мог тише логировать.
+		if strings.Contains(err.Error(), "exit status 28") {
+			return nil, fmt.Errorf("download timeout (network unreachable): %w", err)
+		}
 		return nil, fmt.Errorf("download failed: %w\noutput: %s", err, string(out))
 	}
 
@@ -1913,14 +2006,19 @@ func syncCs2DataFromBase(cs2DataDir, baseDir, dockerImage string) error {
 	// Prefer hardlink copy (instant, no extra disk). Fall back to deep copy
 	// if source and destination are on different filesystems.
 	//
-	// `cp -al` can fail with EPERM under fs.protected_hardlinks=1 when
-	// baseDir files are owned by a different uid than the agent — this
-	// happens if an older cs2-server container ran `chown -R steam:steam`
-	// on the hardlinked bind mount, which mutates the underlying inodes
-	// (shared with cs2-base) and leaves cs2-base owned by uid=1000. The
-	// entrypoint fix prevents future recurrence, but we also self-heal
-	// here: if cp -al fails, chown cs2-base back to the agent uid via a
-	// privileged docker container and retry once.
+	// `cp -al` падает EPERM под fs.protected_hardlinks=1, если baseDir
+	// принадлежит другому uid чем агент (типично: старый cs2-server
+	// контейнер сделал chown -R steam:steam, и cs2-base оказалась на
+	// uid=1000). Раньше мы пробовали cp, фейлились на каждом файле
+	// (40+ строк EPERM в логе), потом делали chown и retry. Теперь
+	// проверяем owner ДО запуска и сразу chown'аем если надо — лог
+	// чище и copy не делается дважды.
+	if needsChown, err := baseNeedsChown(baseDir); err == nil && needsChown {
+		if fixErr := chownBaseToAgent(baseDir, dockerImage); fixErr != nil {
+			fmt.Printf("[agent] preemptive chown cs2-base failed: %v (continuing — cp -al может ещё пройти)\n", fixErr)
+		}
+	}
+
 	runHardlinkCopy := func() ([]byte, error) {
 		cmd := exec.Command("cp", "-al", baseDir+"/.", cs2DataDir+"/")
 		return cmd.CombinedOutput()
@@ -2047,6 +2145,25 @@ func removeCs2DataTree(cs2DataDir, dockerImage string) error {
 // fs.protected_hardlinks=1 the agent then can't `cp -al` from it because
 // non-root processes may not hardlink files they don't own. We spawn a
 // throwaway privileged container to chown the tree back to the agent's uid.
+// baseNeedsChown — нужен ли preemptive chown cs2-base'а перед cp -al.
+// Возвращает true если каталог не принадлежит uid'у агента, что под
+// fs.protected_hardlinks=1 гарантированно вызовет EPERM на каждом
+// файле в `cp -al`. Проверяем только верхний уровень — этого хватает
+// для типового сценария (root-owned после steamcmd / steam-owned после
+// контейнера). Если файлы внутри неоднородны — последующий cp всё равно
+// сработает по retry-пути.
+func baseNeedsChown(baseDir string) (bool, error) {
+	info, err := os.Stat(baseDir)
+	if err != nil {
+		return false, err
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false, fmt.Errorf("unexpected stat type")
+	}
+	return int(stat.Uid) != os.Getuid(), nil
+}
+
 func chownBaseToAgent(baseDir, dockerImage string) error {
 	if dockerImage == "" {
 		return fmt.Errorf("no docker image provided for privileged chown")

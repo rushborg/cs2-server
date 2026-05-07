@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -127,16 +128,24 @@ func sendHeartbeat(client *connection.Client, cmdHandler *commands.Handler, data
 }
 
 func autoUpdate(cmdHandler *commands.Handler) {
-	log.Printf("[agent] checking for updates...")
 	result, err := cmdHandler.HandleCommand("update_agent", json.RawMessage(`{"download_url":""}`))
 	if err != nil {
-		// "checksum mismatch" or "download URL not allowed" means no update or error
-		// "updating" means update in progress
+		// Сетевые таймауты до GitHub — частая ситуация (CDN сбой,
+		// провайдер троттлит, etc.). Не шумим в логе ERROR'ом, тихо
+		// пропускаем — следующий tick через 6ч попробует ещё раз.
+		msg := err.Error()
+		if strings.Contains(msg, "download timeout") ||
+			strings.Contains(msg, "exit status 28") {
+			return
+		}
 		log.Printf("[agent] auto-update check: %v", err)
 		return
 	}
 	if r, ok := result.(map[string]string); ok {
-		log.Printf("[agent] auto-update: %s", r["status"])
+		// "already_latest" — норма, не пишем
+		if status := r["status"]; status != "" && status != "already_latest" {
+			log.Printf("[agent] auto-update: %s", status)
+		}
 	}
 }
 
