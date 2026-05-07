@@ -66,6 +66,10 @@ func main() {
 	client := connection.NewClient(cfg.APIUrl, cfg.HostID, cfg.APIKey)
 	client.SetHandler(cmdHandler.HandleCommand)
 
+	// Apply host performance tuning (CPU governor, THP, swap, sudoers).
+	// No-op if already applied or sudoers not configured (logs guidance).
+	cmdHandler.MaybeApplyHostPerfOnStartup()
+
 	// Start connection in background
 	go client.Run()
 

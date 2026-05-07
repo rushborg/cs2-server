@@ -78,25 +78,34 @@ sysctl --system >/dev/null
 echo "[bootstrap-perf]   swappiness: $(cat /proc/sys/vm/swappiness)"
 
 # ─── 4. sudoers entry for agent realtime + ufw ─────────────────────────
+# Не трогаем sudoers если он уже настроен installer'ом (там полный
+# набор entries — cp/chmod/systemctl restart для self-update + ufw +
+# chrt + ссылка на сам этот скрипт). Затирание сейчас удалит остальные
+# entries и сломает self-update agent'а. Создаём только если файла нет
+# (например когда оператор запустил скрипт руками без installer'а).
 echo "[bootstrap-perf] (4/4) configuring sudoers for rushborg-agent"
-SUDO_USER_NAME="${SUDO_USER:-rushborgsrv}"
-# Try to find the actual agent user by checking common installs.
-if ! id rushborgsrv >/dev/null 2>&1; then
-  if id rushborg >/dev/null 2>&1; then
-    SUDO_USER_NAME="rushborg"
+SUDOERS_FILE=/etc/sudoers.d/rushborg-agent
+if [ -f "${SUDOERS_FILE}" ] && grep -q "NOPASSWD" "${SUDOERS_FILE}"; then
+  echo "[bootstrap-perf]   sudoers already configured by installer — skip"
+else
+  SUDO_USER_NAME="${SUDO_USER:-rushborgsrv}"
+  if ! id rushborgsrv >/dev/null 2>&1; then
+    if id rushborg >/dev/null 2>&1; then
+      SUDO_USER_NAME="rushborg"
+    fi
   fi
-fi
-CHRT_PATH="$(command -v chrt || echo /usr/bin/chrt)"
-UFW_PATH="$(command -v ufw || echo /usr/sbin/ufw)"
-cat > /etc/sudoers.d/rushborg-agent <<EOF
+  CHRT_PATH="$(command -v chrt || echo /usr/bin/chrt)"
+  UFW_PATH="$(command -v ufw || echo /usr/sbin/ufw)"
+  cat > "${SUDOERS_FILE}" <<EOF
 # Allow rushborg-agent to bump CS2 process to realtime priority and
 # manage UFW rules without an interactive password prompt.
 ${SUDO_USER_NAME} ALL=(root) NOPASSWD: ${CHRT_PATH}, ${UFW_PATH}
 EOF
-chmod 0440 /etc/sudoers.d/rushborg-agent
-visudo -c -f /etc/sudoers.d/rushborg-agent >/dev/null
-echo "[bootstrap-perf]   sudoers user: ${SUDO_USER_NAME}"
-echo "[bootstrap-perf]   chrt path   : ${CHRT_PATH}"
+  chmod 0440 "${SUDOERS_FILE}"
+  visudo -c -f "${SUDOERS_FILE}" >/dev/null
+  echo "[bootstrap-perf]   sudoers user: ${SUDO_USER_NAME}"
+  echo "[bootstrap-perf]   chrt path   : ${CHRT_PATH}"
+fi
 
 echo ""
 echo "[bootstrap-perf] === DONE ==="

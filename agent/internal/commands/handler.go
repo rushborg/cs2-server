@@ -117,6 +117,7 @@ var allowedCommands = map[string]bool{
 	"get_base_status":     true,
 	"get_agent_logs":      true,
 	"validate_base":       true,
+	"apply_host_perf":     true,
 }
 
 // Тихие команды — read-only поллинг от admin UI или backend keepalive.
@@ -949,6 +950,14 @@ func (h *Handler) HandleCommand(cmdType string, payload json.RawMessage) (result
 
 	case "validate_base":
 		return h.validateBase()
+
+	case "apply_host_perf":
+		var p ApplyHostPerfPayload
+		if err := json.Unmarshal(payload, &p); err != nil {
+			// Empty payload also fine — same as force=false
+			p = ApplyHostPerfPayload{}
+		}
+		return h.ApplyHostPerf(p.Force)
 
 	default:
 		return nil, fmt.Errorf("unknown command: %s", cmdType)
