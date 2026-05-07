@@ -2219,16 +2219,15 @@ func syncCs2DataFromBase(cs2DataDir, baseDir, dockerImage string) error {
 //     root on the host, which gives us a privilege-escalation path that
 //     doesn't require sudoers changes.
 func removeCs2DataTree(cs2DataDir, dockerImage string) error {
-	// Превентивная проверка owner'а: если cs2-data принадлежит другому
-	// uid (типовой случай — uid=1000 после chown -R steam:steam в
-	// контейнере), сразу идём в docker-as-root cleanup, не теряя время
-	// и логи на 50+ EPERM от os.RemoveAll и shell rm.
-	if info, err := os.Stat(cs2DataDir); err == nil {
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok {
-			if int(stat.Uid) != os.Getuid() {
-				goto privilegedCleanup
-			}
-		}
+	// Превентивная проверка owner'а: если cs2-data ИЛИ что-то внутри неё
+	// принадлежит другому uid (типовой случай — uid=1000 после
+	// chown -R steam:steam в контейнере), сразу идём в docker-as-root
+	// cleanup, не теряя время и логи на 50+ EPERM от os.RemoveAll и
+	// shell rm. Корневая директория почти всегда принадлежит агенту
+	// (он её создавал), так что проверять надо ВНУТРИ — конкретно
+	// `addons/metamod` где entrypoint контейнера chown'ит файлы.
+	if cs2DataNeedsPrivilegedCleanup(cs2DataDir) {
+		goto privilegedCleanup
 	}
 
 	// Fast path.
@@ -2309,6 +2308,40 @@ func baseNeedsChown(baseDir string) (bool, error) {
 		return false, fmt.Errorf("unexpected stat type")
 	}
 	return int(stat.Uid) != os.Getuid(), nil
+}
+
+// cs2DataNeedsPrivilegedCleanup определяет нужен ли docker-as-root путь
+// для удаления `cs2-data`. Корневая директория почти всегда принадлежит
+// агенту (он её создаёт), поэтому проверки на ней недостаточно. Реальные
+// "ядовитые" файлы с uid=1000 (steam) лежат глубже — в
+// `game/csgo/addons/{metamod,counterstrikesharp}` куда entrypoint
+// контейнера применяет `chown -R steam:steam`. Достаточно проверить
+// несколько типовых "канареек" — если хоть одна принадлежит чужому uid,
+// идём сразу в privileged cleanup, не теряя время и логи на 50+ EPERM
+// от os.RemoveAll и shell `rm -rf`.
+func cs2DataNeedsPrivilegedCleanup(cs2DataDir string) bool {
+	myUID := os.Getuid()
+	canaries := []string{
+		cs2DataDir,
+		filepath.Join(cs2DataDir, "game", "csgo", "addons"),
+		filepath.Join(cs2DataDir, "game", "csgo", "addons", "metamod"),
+		filepath.Join(cs2DataDir, "game", "csgo", "addons", "metamod.vdf"),
+		filepath.Join(cs2DataDir, "game", "csgo", "addons", "counterstrikesharp"),
+	}
+	for _, p := range canaries {
+		info, err := os.Lstat(p)
+		if err != nil {
+			continue
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			continue
+		}
+		if int(stat.Uid) != myUID {
+			return true
+		}
+	}
+	return false
 }
 
 func chownBaseToAgent(baseDir, dockerImage string) error {
