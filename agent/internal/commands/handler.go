@@ -165,7 +165,15 @@ const maxContainers = 20
 //	Update state (0x61) downloading, progress: 98.77 (61582416353 / 62348865193)
 //
 // SteamCMD prints these roughly twice per second during download/verify.
-var steamcmdProgressRe = regexp.MustCompile(`Update state \(0x([0-9a-fA-F]+)\)[^,]*,\s*progress:\s*([0-9.]+)\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
+// Группы:
+//   1 — hex state code (0x5, 0x61, 0x81, 0x3, 0x0, ...)
+//   2 — текстовый лейбл от SteamCMD ("verifying install", "downloading",
+//       "preallocating", "reconfiguring") — используем для UI mapping'а
+//       чтобы не угадывать по битмаске.
+//   3 — percent
+//   4 — current bytes
+//   5 — total bytes
+var steamcmdProgressRe = regexp.MustCompile(`Update state \(0x([0-9a-fA-F]+)\)\s*([^,]*?)\s*,\s*progress:\s*([0-9.]+)\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)`)
 
 // SteamCMDProgress is a snapshot of current CS2 download progress. It is
 // populated by steamcmdProgressWriter while downloadCS2ViaSteamCMD is running
@@ -329,11 +337,12 @@ func (w *steamcmdProgressWriter) handleLine(line string) {
 		return
 	}
 	state := m[1]
+	rawLabel := strings.ToLower(strings.TrimSpace(m[2]))
 	pct := 0.0
-	fmt.Sscanf(m[2], "%f", &pct)
+	fmt.Sscanf(m[3], "%f", &pct)
 	var cur, total int64
-	fmt.Sscanf(m[3], "%d", &cur)
-	fmt.Sscanf(m[4], "%d", &total)
+	fmt.Sscanf(m[4], "%d", &cur)
+	fmt.Sscanf(m[5], "%d", &total)
 
 	now := time.Now()
 
@@ -345,10 +354,26 @@ func (w *steamcmdProgressWriter) handleLine(line string) {
 			snapSpeed = float64(cur-w.lastBytes) / elapsed
 		}
 	}
+	// Label по тексту от SteamCMD — точнее чем угадывать по битмаске.
+	// Возможные значения: 'downloading', 'verifying install', 'verifying
+	// update', 'preallocating', 'reconfiguring', 'committing', 'unknown'.
+	// На UI: verifying* → 'проверка', preallocating → 'подготовка',
+	// reconfiguring → 'настройка', downloading → 'скачивание'.
 	label := "downloading"
-	if strings.HasPrefix(state, "8") {
+	switch {
+	case strings.Contains(rawLabel, "verif"):
 		label = "verifying"
-	} else if state == "0" {
+	case strings.Contains(rawLabel, "prealloc"):
+		label = "preallocating"
+	case strings.Contains(rawLabel, "reconfig"):
+		label = "reconfiguring"
+	case strings.Contains(rawLabel, "commit"):
+		label = "committing"
+	case strings.Contains(rawLabel, "stag"):
+		label = "staging"
+	case strings.Contains(rawLabel, "download"):
+		label = "downloading"
+	case state == "0":
 		label = "idle"
 	}
 	var snapEta time.Duration
