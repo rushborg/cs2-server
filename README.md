@@ -120,6 +120,47 @@ data_dir: "/opt/rushborg-srv"
 docker_image: "ghcr.io/rushborg/cs2-server:latest"
 ```
 
+## Host performance tuning
+
+CS2 dedicated server is sensitive to scheduler latency. Symptoms of an
+under-tuned host: clients see jitter / "rubberbanding", server log shows
+`UNEXPECTED LONG FRAME DETECTED — m_lastTickEndTime delta XXX.XX`.
+
+Run once on each new host **before** the agent installs (or after — but reboot
+afterwards):
+
+```bash
+sudo bash scripts/bootstrap-host-perf.sh
+```
+
+The script applies four tweaks:
+
+1. **CPU governor → `performance`** via `cpufrequtils`. Pinning frequency
+   prevents tick stretching when cores are scaled down on idle.
+2. **Disables Transparent Hugepages** via `disable-thp.service` systemd unit.
+   Kernel THP defragmentation can freeze processes for 50-100ms.
+3. **`vm.swappiness=1` + low dirty ratios** in `/etc/sysctl.d/`. Match data
+   never gets swapped to disk; writeback bursts are smaller.
+4. **`sudoers.d/rushborg-agent`** so the agent can `chrt` and `ufw` without a
+   password. With this in place, every `deploy_server` automatically promotes
+   the cs2 process to `SCHED_FIFO` priority 80 — the biggest single win.
+
+In addition, the generated `docker-compose.yml` carries:
+- `mem_swappiness: 0` (per-container hard guarantee)
+- `oom_score_adj: -500` (cs2 is the last thing OOM-killer touches)
+- `ulimits: memlock=-1, rtprio=99` (lets future in-container `chrt` work too)
+
+Recommended verification after deploy:
+
+```bash
+# Per-cpu freq should report governor=performance and freq pinned to max
+cpufreq-info | grep -E "governor|current CPU frequency"
+# THP must be 'never'
+cat /sys/kernel/mm/transparent_hugepage/enabled
+# CS2 process should be SCHED_FIFO
+ps -e -o pid,class,rtprio,comm | grep cs2
+```
+
 ## CI/CD
 
 `.github/workflows/docker-cs2.yml`:

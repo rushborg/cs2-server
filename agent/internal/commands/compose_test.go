@@ -31,6 +31,10 @@ func TestGenerateComposeFile(t *testing.T) {
 		{"demos mount", "/opt/rushborg-srv/instances/27015/demos:/demos"},
 		{"network host", "network_mode: host"},
 		{"seccomp", "seccomp:unconfined"},
+		{"swappiness", "mem_swappiness: 0"},
+		{"oom_score_adj", "oom_score_adj: -500"},
+		{"ulimit memlock", "memlock: -1"},
+		{"ulimit rtprio", "rtprio: 99"},
 		{"label port", "rushborg.port=27015"},
 	}
 

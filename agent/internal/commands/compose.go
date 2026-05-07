@@ -40,6 +40,18 @@ func GenerateComposeFile(port, gotvPort int, image, hostname, gsltToken, rconPas
     container_name: cs2-%d
     network_mode: host
     restart: unless-stopped
+    # Performance tuning to reduce "UNEXPECTED LONG FRAME DETECTED" stalls.
+    # mem_swappiness=0  — никогда не свопим CS2-процесс на диск (стол по 100ms).
+    # ulimits.memlock   — разрешаем mlock игровому процессу (важно если потом
+    #                     включим SCHED_FIFO через chrt от хоста).
+    # ulimits.rtprio    — разрешаем realtime-приоритеты (для chrt -f внутри).
+    # oom_score_adj=-500 — снижаем шанс что OOM убъёт сервер во время матча.
+    mem_swappiness: 0
+    oom_score_adj: -500
+    ulimits:
+      memlock: -1
+      rtprio: 99
+      nice: -20
     security_opt:
       - seccomp:unconfined
     environment:

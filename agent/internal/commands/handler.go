@@ -1102,11 +1102,78 @@ func (h *Handler) deployServer(p DeployPayload) (interface{}, error) {
 	}
 	fmt.Printf("[agent] deploy %d: container started\n%s\n", p.Port, string(out))
 
+	// Bump CS2 process to SCHED_FIFO realtime priority — лечит
+	// "UNEXPECTED LONG FRAME DETECTED" (планировщик Linux прерывает
+	// игровой тред чтобы дать процессорное время фоновым задачам).
+	// Бест-эффорт: если sudoers не настроен или контейнер ещё не
+	// поднял cs2-процесс — silent skip. Без этого нет регресса по
+	// сравнению со старым поведением.
+	go bumpCS2RealtimePriority(p.Port)
+
 	return map[string]interface{}{
 		"port":     p.Port,
 		"hostname": p.Hostname,
 		"status":   "started",
 	}, nil
+}
+
+// bumpCS2RealtimePriority finds the cs2 process inside the just-started
+// container and elevates it to SCHED_FIFO priority 80 via `chrt`. This is
+// host-side scheduling (the kernel scheduler doesn't care that the process
+// lives inside a docker namespace). Requires a sudoers entry for chrt:
+//
+//   echo 'rushborgsrv ALL=(root) NOPASSWD: /usr/bin/chrt' >> \
+//     /etc/sudoers.d/rushborg-agent
+//
+// Best-effort: failures are logged but не валят deploy. Async because cs2
+// процесс может ещё не успеть стартовать к моменту возврата `compose up`.
+func bumpCS2RealtimePriority(port int) {
+	containerName := fmt.Sprintf("cs2-%d", port)
+
+	// Wait up to 30s for cs2 process to appear inside the container.
+	// `docker top` showing the cs2 binary means the dedicated server has
+	// started PID-1's child. Polling avoids racing with entrypoint setup
+	// (steamcmd → cs2 fork) which can take a few seconds.
+	var pid int
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		out, err := exec.Command("docker", "top", containerName, "-eo", "pid,comm").Output()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					continue
+				}
+				if fields[1] == "cs2" {
+					if n, perr := strconv.Atoi(fields[0]); perr == nil {
+						pid = n
+						break
+					}
+				}
+			}
+		}
+		if pid != 0 {
+			break
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if pid == 0 {
+		fmt.Printf("[agent] chrt %d: cs2 process not found within 30s, skipping realtime priority\n", port)
+		return
+	}
+
+	chrtPath := findBinary("chrt")
+	// Try direct chrt first (works if agent runs as root); fall back to sudo -n.
+	if err := exec.Command(chrtPath, "-f", "-p", "80", strconv.Itoa(pid)).Run(); err == nil {
+		fmt.Printf("[agent] chrt %d: cs2 (pid=%d) → SCHED_FIFO 80\n", port, pid)
+		return
+	}
+	out, err := exec.Command("sudo", "-n", chrtPath, "-f", "-p", "80", strconv.Itoa(pid)).CombinedOutput()
+	if err != nil {
+		fmt.Printf("[agent] chrt %d: realtime priority skipped (sudoers not configured?): %v\n%s\n", port, err, strings.TrimSpace(string(out)))
+		return
+	}
+	fmt.Printf("[agent] chrt %d: cs2 (pid=%d) → SCHED_FIFO 80 (via sudo)\n", port, pid)
 }
 
 func (h *Handler) stopServer(port int) (interface{}, error) {
