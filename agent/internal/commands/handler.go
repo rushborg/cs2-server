@@ -1763,24 +1763,56 @@ func (h *Handler) updateAgent(p UpdateAgentPayload) (interface{}, error) {
 		return nil, fmt.Errorf("chmod failed: %w", err)
 	}
 
-	// Replace binary — agent runs as rushborgsrv, binary owned by root.
-	// Use sudo with full paths (must match sudoers rules exactly).
+	// Replace binary. Two paths:
+	//   1) Если бинарник owned by agent uid — обычный os.Rename работает
+	//      без sudo (мы можем писать в свой каталог).
+	//   2) Иначе sudo -n cp + chmod + systemctl restart. Если sudoers не
+	//      настроен — выдаём осмысленную ошибку с подсказкой про
+	//      требуемые правила, а не TTY-фейл от sudo.
 	cpPath := findBinary("cp")
 	chmodPath := findBinary("chmod")
 	systemctlPath := findBinary("systemctl")
 
-	cpOut, cpErr := exec.Command("sudo", cpPath, "-f", tmpPath, binPath).CombinedOutput()
-	os.Remove(tmpPath)
-	if cpErr != nil {
-		return nil, fmt.Errorf("replace binary failed: %w\noutput: %s", cpErr, string(cpOut))
+	tryRename := func() error {
+		if err := os.Rename(tmpPath, binPath); err != nil {
+			return err
+		}
+		os.Chmod(binPath, 0o755)
+		return nil
 	}
-	exec.Command("sudo", chmodPath, "+x", binPath).Run()
+	trySudoCopy := func() error {
+		cpOut, err := exec.Command("sudo", "-n", cpPath, "-f", tmpPath, binPath).CombinedOutput()
+		if err != nil {
+			outStr := strings.TrimSpace(string(cpOut))
+			if strings.Contains(outStr, "a terminal is required") ||
+				strings.Contains(outStr, "no tty present") ||
+				strings.Contains(outStr, "password is required") {
+				return fmt.Errorf("sudo NOPASSWD не настроен. Добавь в /etc/sudoers.d/rushborg-agent:\n  rushborgsrv ALL=(root) NOPASSWD: %s, %s, %s",
+					cpPath, chmodPath, systemctlPath)
+			}
+			return fmt.Errorf("sudo cp failed: %w (output: %s)", err, outStr)
+		}
+		exec.Command("sudo", "-n", chmodPath, "+x", binPath).Run()
+		return nil
+	}
+
+	if err := tryRename(); err != nil {
+		// Прямой rename не получился (binary owned by root) — пробуем sudo
+		if sudoErr := trySudoCopy(); sudoErr != nil {
+			os.Remove(tmpPath)
+			return nil, fmt.Errorf("replace binary failed: %w", sudoErr)
+		}
+	}
+	os.Remove(tmpPath)
 
 	// Restart agent via systemctl (this kills the current process)
 	go func() {
-		// Small delay to allow response to be sent
 		exec.Command("sleep", "1").Run()
-		exec.Command("sudo", systemctlPath, "restart", "rushborg-agent").Run()
+		// Сначала пробуем без sudo (может не быть нужно если запущен от
+		// rushborgsrv через user-instance systemd), потом с sudo -n.
+		if err := exec.Command(systemctlPath, "restart", "rushborg-agent").Run(); err != nil {
+			exec.Command("sudo", "-n", systemctlPath, "restart", "rushborg-agent").Run()
+		}
 	}()
 
 	return map[string]string{"status": "updating", "message": "agent will restart in ~1s"}, nil
